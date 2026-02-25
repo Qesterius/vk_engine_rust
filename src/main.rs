@@ -4,7 +4,7 @@ mod vulkan_context;
 mod config;
 
 use crate::config::{VALIDATION_ENABLED, APPLICATION_NAME, APPLICATION_TITLE, ENGINE_NAME, ENGINE_VERSION};
-use ash::{ Entry, Instance };
+use ash::{ Entry, Instance, vk };
 use log::{error, info, warn};
 use raw_window_handle::{HasDisplayHandle};
 use winit::application::ApplicationHandler;
@@ -133,6 +133,7 @@ impl ApplicationHandler for App{
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(mut state) = self.state.take(){
+            
             unsafe{state.destroy();}
         }
     }
@@ -176,10 +177,191 @@ impl RenderingState
     }
 
     unsafe fn render(&mut self) -> Result<()> {
+        /*
+        1. CPU Synchronization: The CPU waits for the GPU to finish its previous work (in_flight_fence).
+        2. Image Acquisition: We ask the Swapchain for an image index to draw on (acquire_next_image).
+        3. Command Recording: We write a "script" (Command Buffer) for the GPU, telling it to clear the image to a color.
+        4. Submission: We send that script to the GPU queue, linking it to semaphores so it knows when to start and finish.
+        5. Presentation: We tell the OS to show the finished image on the screen.
+        */
+
+        let ctx = &mut self.vulkan_context;
+        let device = &self.logical_device;
+        let sync_frame_index = ctx.current_frame % vulkan_context::MAX_FRAMES_IN_FLIGHT;
+        let curr_cmd_buf = ctx.command_buffers[sync_frame_index];
+
+        //resize checks
+        let current_size = self.window.inner_size();
+        if current_size.width == 0 || current_size.height == 0 {
+            return Ok(());
+        }
+
+        let needs_rebuild = match &ctx.swapchain {
+                None => true,
+                Some(sc) => sc.extent.width != current_size.width || sc.extent.height != current_size.height,
+            };
+        
+
+       if needs_rebuild {
+            (unsafe { device.device_wait_idle() })?;
+            
+            if ctx.swapchain.is_some() {
+                ctx.swapchain = None;
+                return Ok(());
+            }
+
+            // Pass the CURRENT size to the recreation function
+            match unsafe { ctx.recreate_swapchain(&self.window, current_size, &self.instance, device) } {
+                core::result::Result::Ok(_) => {
+                    info!("Swapchain successfully rebuilt at {}x{}", current_size.width, current_size.height);
+                    return Ok(());
+                },
+                core::result::Result::Err(e) => {
+                    warn!("Swapchain recreation pending: {}", e);
+                    return Ok(());
+                }
+            }
+        }
+        let sc = ctx.swapchain.as_mut().unwrap();
+
+        // CPU wait for GPU to finish rendering the previous in_flight frame
+        (unsafe { device.wait_for_fences(&[ctx.frame_in_flight_fences[sync_frame_index]], true, u64::MAX) })?;
+
+        // Ask for the next image index to render to, and handle swapchain status
+        let (image_index, _) = match unsafe {
+            sc.loader.acquire_next_image(sc.swapchain, u64::MAX, ctx.image_available_semaphores[sync_frame_index], ash::vk::Fence::null())
+        } {
+            core::result::Result::Ok((image_index, is_suboptimal )) => {
+                if is_suboptimal {
+                    warn!("Swapchain is suboptimal, recreating...");
+                    unsafe { ctx.recreate_swapchain(&self.window, self.window.inner_size(), &self.instance, device) }?;
+                    return Ok(());
+                }
+                (image_index, is_suboptimal)
+            },
+            core::result::Result::Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                warn!("Swapchain is out of date, needs recreation.");
+                (unsafe { ctx.recreate_swapchain(&self.window, self.window.inner_size(), &self.instance, device) })?;
+                return Ok(());
+            }
+            core::result::Result::Err(e) => {
+                error!("Failed to acquire swapchain image: {}", e);
+                return Err(anyhow!("Failed to acquire swapchain image: {}", e));
+            }
+        };
+
+        // Wait for current image to be freed by GPU before we use it again and write command buffers
+        if ctx.images_in_flight_fences[image_index as usize] != vk::Fence::null() {
+            (unsafe { device.wait_for_fences(&[ctx.images_in_flight_fences[image_index as usize]], true, u64::MAX) })?;
+        }
+        // Map current image to the current in-flight fence
+        ctx.images_in_flight_fences[image_index as usize] = ctx.frame_in_flight_fences[sync_frame_index];
+        
+        // Record command buffer
+        unsafe { device.reset_command_buffer(curr_cmd_buf,ash::vk::CommandBufferResetFlags::empty())? };
+        let begin_info = ash::vk::CommandBufferBeginInfo::default()
+        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        unsafe { device.begin_command_buffer(curr_cmd_buf, &begin_info)? };
+
+        let image = sc.images[image_index as usize];
+        let range = vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+
+        //Move image memory (layout) from unknown state to writing state
+        let barrier_to_clear = vk::ImageMemoryBarrier::default()
+            .old_layout(ash::vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .image(image)
+            .subresource_range(range)
+            .src_access_mask(ash::vk::AccessFlags::empty())
+            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+
+        unsafe { device.cmd_pipeline_barrier(
+            curr_cmd_buf,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[barrier_to_clear]
+        )};
+
+        // Clear image command
+        let clear_color = vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] };
+        unsafe { device.cmd_clear_color_image(
+            curr_cmd_buf,
+            sc.images[image_index as usize],
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &clear_color,
+            &[range]
+        )};
+
+        //Move image memory (layout) from writing state to presentation state
+        let barrier_to_present = vk::ImageMemoryBarrier::default()
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+            .image(image)
+            .subresource_range(range)
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ);
+
+        unsafe { device.cmd_pipeline_barrier(
+            curr_cmd_buf,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[barrier_to_present]
+        )};
+
+        (unsafe { device.end_command_buffer(curr_cmd_buf) })?;
+        (unsafe { device.reset_fences(&[ctx.frame_in_flight_fences[sync_frame_index]]) })?;
+
+
+        //send command buffer to the queue
+        let wait_semaphores = [ctx.image_available_semaphores[sync_frame_index]];
+        let signal_semaphores = [ctx.rendering_finished_semaphores[image_index as usize]];
+        let wait_stages = [vk::PipelineStageFlags::TRANSFER];
+        let cmd_buff_array = [curr_cmd_buf];
+        let submit_info = vk::SubmitInfo::default()
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&wait_stages)
+            .command_buffers(&cmd_buff_array)
+            .signal_semaphores(&signal_semaphores);
+
+        (unsafe { device.queue_submit(ctx.graphics_queue, &[submit_info], ctx.frame_in_flight_fences[sync_frame_index]) })?;
+
+        let swapchains = [sc.swapchain];
+        let image_indices = [image_index];
+        let present_info = vk::PresentInfoKHR::default()
+            .wait_semaphores(&signal_semaphores)
+            .swapchains(&swapchains)
+            .image_indices(&image_indices);
+
+
+
+        (unsafe { sc.loader.queue_present(ctx.present_queue, &present_info) })?;
+        ctx.current_frame = ctx.current_frame + 1;
         Ok(())
     }
 
     unsafe fn destroy(&mut self){
+        unsafe { self.logical_device.device_wait_idle().ok(); };
+        
+        for sem in self.vulkan_context.rendering_finished_semaphores.drain(..){
+            unsafe { self.logical_device.destroy_semaphore(sem, None) };
+        }
+        for fence in self.vulkan_context.images_in_flight_fences.drain(..){
+            unsafe { self.logical_device.destroy_fence(fence, None) };
+        }
+
+        drop(self.vulkan_context.swapchain.take());
         self.deletion_queue.flush();
 
         unsafe{
