@@ -285,7 +285,25 @@ impl RenderingState
             .clear_values(&clear_color_arr);
         unsafe{
             device.cmd_begin_render_pass(curr_cmd_buf, &render_pass_info, vk::SubpassContents::INLINE);
-            // rest of render commands would go here
+            device.cmd_bind_pipeline(curr_cmd_buf, vk::PipelineBindPoint::GRAPHICS, ctx.graphics_pipeline);
+            
+            let viewport = vk::Viewport {
+                x: 0.0,
+                y: 0.0,
+                width: sc.extent.width as f32,
+                height: sc.extent.height as f32,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            };
+            device.cmd_set_viewport(curr_cmd_buf, 0, &[viewport]);
+            let scissor = vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: sc.extent,
+            };
+            device.cmd_set_scissor(curr_cmd_buf, 0, &[scissor]);
+            
+            
+            device.cmd_draw(curr_cmd_buf, 3, 1, 0, 0);
             device.cmd_end_render_pass(curr_cmd_buf);
         }
 

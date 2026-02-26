@@ -32,6 +32,7 @@ pub(crate) struct VulkanContext {
     pub(crate) command_pool: vk::CommandPool,
     pub(crate) command_buffers: Vec<vk::CommandBuffer>,
     pub(crate) render_pass: vk::RenderPass,
+    pub(crate) graphics_pipeline: vk::Pipeline,
 }
 
 impl fmt::Debug for VulkanContext {
@@ -168,6 +169,89 @@ impl VulkanContext {
             }
         });
         
+        //graphics pipeline initialization, 
+        //TODO: move to its own function that is defined below
+        //TODO: encapsulate creations above into its functions. 
+        //TODO: move adding to deletion queue into creation functions.
+        let vert_module = (unsafe { load_shader_module(&logical_device, "src/shaders/vert.spv") })?;
+        let frag_module = (unsafe { load_shader_module(&logical_device, "src/shaders/frag.spv") })?;
+        let logical_device_clone = logical_device.clone();
+        deletion_queue.push(move || unsafe {
+            logical_device_clone.destroy_shader_module(vert_module, None);
+            logical_device_clone.destroy_shader_module(frag_module, None);
+        });
+        
+        let layout_info = vk::PipelineLayoutCreateInfo::default();
+        let pipeline_layout = (unsafe { logical_device.create_pipeline_layout(&layout_info, None) })?;
+        let logical_device_clone = logical_device.clone();
+        deletion_queue.push(move || unsafe {
+            logical_device_clone.destroy_pipeline_layout(pipeline_layout, None);
+        });
+
+        let shader_stages = [
+            vk::PipelineShaderStageCreateInfo
+                ::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert_module)
+                .name(CStr::from_bytes_with_nul(b"main\0").unwrap()),
+            vk::PipelineShaderStageCreateInfo
+                ::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(frag_module)
+                .name(CStr::from_bytes_with_nul(b"main\0").unwrap()),
+        ];
+        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .primitive_restart_enable(false);
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic_state_info = vk::PipelineDynamicStateCreateInfo::default()
+            .dynamic_states(&dynamic_states);
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+            .depth_clamp_enable(false)
+            .rasterizer_discard_enable(false)
+            .polygon_mode(vk::PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(vk::CullModeFlags::BACK)
+            .front_face(vk::FrontFace::CLOCKWISE)
+            .depth_bias_enable(false);
+        let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
+            .sample_shading_enable(false)
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(false);
+        let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
+            .logic_op_enable(false)
+            .attachments(std::slice::from_ref(&color_blend_attachment));
+
+        let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+                .stages(&shader_stages)
+                .vertex_input_state(&vertex_input_info)
+                .input_assembly_state(&input_assembly)
+                .viewport_state(&viewport_state)
+                .rasterization_state(&rasterizer)
+                .multisample_state(&multisampling)
+                .color_blend_state(&color_blending)
+                .dynamic_state(&dynamic_state_info)
+                .layout(pipeline_layout)
+                .render_pass(render_pass)
+                .subpass(0);
+
+        let graphics_pipeline = (unsafe {
+            logical_device.create_graphics_pipelines(
+                vk::PipelineCache::null(),
+                std::slice::from_ref(&pipeline_info),
+                None
+            ).map_err(|e| anyhow!("Failed to create graphics pipeline: {:?}", e))?
+        })[0];
+        let logical_device_clone = logical_device.clone();
+        deletion_queue.push(move || unsafe {
+            logical_device_clone.destroy_pipeline(graphics_pipeline, None);
+        });
 
         //return
         let context = Self {
@@ -185,6 +269,7 @@ impl VulkanContext {
             command_buffers,
             command_pool: command_pool,
             render_pass: render_pass,
+            graphics_pipeline: graphics_pipeline,
         };
 
         Ok((context, logical_device))
@@ -545,8 +630,7 @@ fn get_swapchain_extent(window: &Window, capabilities: vk::SurfaceCapabilitiesKH
 
 //pipeline
 unsafe fn create_pipeline() -> Result<()> {
-    Ok(())
-}
+    Ok(())}
 
 //phyiscal device
 unsafe fn check_physical_device(
@@ -703,3 +787,17 @@ unsafe fn create_render_pass(format: vk::Format, logical_device: &ash::Device, d
     Ok(render_pass)
 }
 
+pub unsafe fn create_shader_module(logical_device: &ash::Device, code: &[u32]) -> Result<vk::ShaderModule> {
+    let create_info = vk::ShaderModuleCreateInfo
+        ::default()
+        .code(code);
+
+    let shader_module = (unsafe { logical_device.create_shader_module(&create_info, None) })?;
+    Ok(shader_module)
+}
+
+pub unsafe fn load_shader_module(device: &ash::Device, path: &str) -> Result<vk::ShaderModule> {
+    let file = std::fs::File::open(path).map_err(|e| anyhow!("Failed to open shader file {}:{}", path, e))?;
+    let words = ash::util::read_spv(&mut std::io::BufReader::new(file)).map_err(|e| anyhow!("Failed to read shader file {}:{}", path, e))?;
+    Ok(unsafe { create_shader_module(device, &words) }?)
+}
