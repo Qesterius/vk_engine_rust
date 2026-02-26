@@ -31,6 +31,7 @@ pub(crate) struct VulkanContext {
     pub(crate) current_frame: usize,
     pub(crate) command_pool: vk::CommandPool,
     pub(crate) command_buffers: Vec<vk::CommandBuffer>,
+    pub(crate) render_pass: vk::RenderPass,
 }
 
 impl fmt::Debug for VulkanContext {
@@ -84,16 +85,29 @@ impl VulkanContext {
                 }
             });
         }
+        
+        let swapchain_details = (unsafe {
+            get_swapchain_details(physical_device, surface, &surface_loader)
+        })?;
 
+        let surface_format = get_swapchain_surface_format(&swapchain_details.formats);
+
+        //render pass
+        let render_pass = (unsafe {
+            create_render_pass(surface_format.format, &logical_device, deletion_queue)
+        })?;
+        
         //swapchain
         let swapchain = (unsafe {SafeSwapchain::new(
+                swapchain_details,
                 window,
                 instance,
                 physical_device,
                 &logical_device,
                 surface,
                 &surface_loader,
-                window.inner_size()
+                window.inner_size(),
+                render_pass
             )
         })?;
 
@@ -153,6 +167,7 @@ impl VulkanContext {
                 logical_device_clone.destroy_semaphore(semaphore, None);
             }
         });
+        
 
         //return
         let context = Self {
@@ -169,6 +184,7 @@ impl VulkanContext {
             current_frame: 0,
             command_buffers,
             command_pool: command_pool,
+            render_pass: render_pass,
         };
 
         Ok((context, logical_device))
@@ -181,15 +197,20 @@ impl VulkanContext {
             unsafe { logical_device.destroy_semaphore(sem, None) };
         }
 
+        let swapchain_details = (unsafe {
+            get_swapchain_details(self.physical_device, self.surface, &self.surface_loader)
+        })?;
         self.swapchain = None; // Drop old swapchain and its resources
         let swapchain = unsafe { SafeSwapchain::new(
+            swapchain_details,
             window,
             instance,
             self.physical_device,
             logical_device,
             self.surface,
             &self.surface_loader,
-            size
+            size,
+            self.render_pass
         )?};
         let new_image_count = swapchain.images.len();
         self.swapchain = Some(swapchain);
@@ -351,9 +372,11 @@ pub struct SafeSwapchain{
     pub swapchain: vk::SwapchainKHR,
     pub loader: ash::khr::swapchain::Device,
     pub images: Vec<vk::Image>,
-    pub image_views: Vec<ImageView>,
+    pub image_views: Vec<vk::ImageView>,
+    pub framebuffers: Vec<vk::Framebuffer>,
     pub extent: vk::Extent2D,
     device: ash::Device,
+    pub format: vk::Format,
 }
 impl Drop for SafeSwapchain {
     fn drop(&mut self) {
@@ -361,27 +384,45 @@ impl Drop for SafeSwapchain {
             for &view in &self.image_views {
                 self.device.destroy_image_view(view, None);
             }
+            for &fb in &self.framebuffers {
+                self.device.destroy_framebuffer(fb, None);
+            }
             self.loader.destroy_swapchain(self.swapchain, None);
         }
     }
 }
+
+fn get_swapchain_details(physical_device: vk::PhysicalDevice, surface: vk::SurfaceKHR, surface_loader: &ash::khr::surface::Instance) -> Result<SwapchainSupportDetails> {
+    Ok(SwapchainSupportDetails {
+        capabilites: unsafe {
+            surface_loader.get_physical_device_surface_capabilities(physical_device, surface)?
+        },
+        formats: unsafe {
+            surface_loader.get_physical_device_surface_formats(physical_device, surface)?
+        },
+        present_modes: unsafe {
+            surface_loader.get_physical_device_surface_present_modes(physical_device, surface)?
+        },
+    })
+}
+
 impl SafeSwapchain {
     pub unsafe fn new(
+        swapchain_details: SwapchainSupportDetails,
         window: &Window,
         instance: &Instance,
         physical_device: vk::PhysicalDevice,
         logical_device: &ash::Device,
         surface: vk::SurfaceKHR,
         surface_loader: &ash::khr::surface::Instance,
-        size: winit::dpi::PhysicalSize<u32>
+        size: winit::dpi::PhysicalSize<u32>,
+        render_pass: vk::RenderPass
     ) -> Result<Self> {
 
         let indices = (unsafe {
             QueueFamilyIndices::get(instance, physical_device, surface, surface_loader)
         })?;
-        let support = (unsafe {
-            SwapchainSupportDetails::get(physical_device, surface, surface_loader)
-        })?;
+        let support = swapchain_details;
 
         let surface_format = get_swapchain_surface_format(&support.formats);
         let present_mode = get_swapchain_present_mode(&support.present_modes);
@@ -409,7 +450,7 @@ impl SafeSwapchain {
             .image_format(surface_format.format)
             .image_color_space(surface_format.color_space)
             .image_extent(extent)
-            .image_array_layers(1)
+            .image_array_layers(1) 
             .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST) // we want to render directly to the swapchain images, so COLOR_ATTACHMENT. We also want to copy rendered
             .image_sharing_mode(image_sharing_mode)
             .queue_family_indices(&queue_family_indices)
@@ -452,6 +493,19 @@ impl SafeSwapchain {
 
             swapchain_image_views.push(image_view);
         }
+        let mut framebuffers = Vec::with_capacity(swapchain_images.len());
+        for &image_view in &swapchain_image_views {
+            let attachments = [image_view];
+            let framebuffer_info = vk::FramebufferCreateInfo
+                ::default()
+                .render_pass(render_pass)
+                .attachments(&attachments)
+                .width(extent.width)
+                .height(extent.height)
+                .layers(1);
+            let framebuffer = (unsafe { logical_device.create_framebuffer(&framebuffer_info, None) })?;
+            framebuffers.push(framebuffer);
+        }
 
         Ok(Self {
             swapchain,
@@ -459,7 +513,9 @@ impl SafeSwapchain {
             images: swapchain_images,
             image_views: swapchain_image_views,
             device: logical_device.clone(),
-            extent: extent
+            extent: extent,
+            format: surface_format.format,
+            framebuffers: framebuffers,
         })
     }
 }
@@ -612,3 +668,38 @@ unsafe fn setup_debug_messenger(
 
     Ok((debug_utils_loader, messenger))
 }
+
+unsafe fn create_render_pass(format: vk::Format, logical_device: &ash::Device, deletion_queue: &mut DeletionQueue) -> Result<vk::RenderPass> {
+    let color_attachment_description = vk::AttachmentDescription
+        ::default()
+        .format(format)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .load_op(vk::AttachmentLoadOp::CLEAR)
+        .store_op(vk::AttachmentStoreOp::STORE)
+        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
+    let color_attachment_ref = vk::AttachmentReference
+        ::default()
+        .attachment(0)
+        .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+    let subpass_description = vk::SubpassDescription
+        ::default()
+        .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+        .color_attachments(std::slice::from_ref(&color_attachment_ref));
+
+    let render_pass_info = vk::RenderPassCreateInfo
+        ::default()
+        .attachments(std::slice::from_ref(&color_attachment_description))
+        .subpasses(std::slice::from_ref(&subpass_description));
+
+    let render_pass = (unsafe { logical_device.create_render_pass(&render_pass_info, None) })?;
+    let logical_device_clone = logical_device.clone();
+    deletion_queue.push(move || unsafe {
+        logical_device_clone.destroy_render_pass(render_pass, None);
+    });
+
+    Ok(render_pass)
+}
+

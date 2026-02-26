@@ -272,53 +272,22 @@ impl RenderingState
             layer_count: 1,
         };
 
-        //Move image memory (layout) from unknown state to writing state
-        let barrier_to_clear = vk::ImageMemoryBarrier::default()
-            .old_layout(ash::vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-            .image(image)
-            .subresource_range(range)
-            .src_access_mask(ash::vk::AccessFlags::empty())
-            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
-
-        unsafe { device.cmd_pipeline_barrier(
-            curr_cmd_buf,
-            vk::PipelineStageFlags::TOP_OF_PIPE,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[barrier_to_clear]
-        )};
-
         // Clear image command
-        let clear_color = vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] };
-        unsafe { device.cmd_clear_color_image(
-            curr_cmd_buf,
-            sc.images[image_index as usize],
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            &clear_color,
-            &[range]
-        )};
+        let clear_color_arr = [vk::ClearValue{color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] }}];
 
-        //Move image memory (layout) from writing state to presentation state
-        let barrier_to_present = vk::ImageMemoryBarrier::default()
-            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-            .image(image)
-            .subresource_range(range)
-            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ);
-
-        unsafe { device.cmd_pipeline_barrier(
-            curr_cmd_buf,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[barrier_to_present]
-        )};
+        let render_pass_info = vk::RenderPassBeginInfo::default()
+            .render_pass(ctx.render_pass)
+            .framebuffer(sc.framebuffers[image_index as usize])
+            .render_area(vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: sc.extent,
+            })
+            .clear_values(&clear_color_arr);
+        unsafe{
+            device.cmd_begin_render_pass(curr_cmd_buf, &render_pass_info, vk::SubpassContents::INLINE);
+            // rest of render commands would go here
+            device.cmd_end_render_pass(curr_cmd_buf);
+        }
 
         (unsafe { device.end_command_buffer(curr_cmd_buf) })?;
         (unsafe { device.reset_fences(&[ctx.frame_in_flight_fences[sync_frame_index]]) })?;
@@ -357,10 +326,7 @@ impl RenderingState
         for sem in self.vulkan_context.rendering_finished_semaphores.drain(..){
             unsafe { self.logical_device.destroy_semaphore(sem, None) };
         }
-        for fence in self.vulkan_context.images_in_flight_fences.drain(..){
-            unsafe { self.logical_device.destroy_fence(fence, None) };
-        }
-
+        self.vulkan_context.images_in_flight_fences.clear();
         drop(self.vulkan_context.swapchain.take());
         self.deletion_queue.flush();
 
