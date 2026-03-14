@@ -10,6 +10,8 @@ use raw_window_handle::{ HasDisplayHandle, HasWindowHandle };
 use super::vulkan_context::VulkanContext;
 use super::cleanup::DeletionQueue;
 use crate::config::{APPLICATION_NAME, ENGINE_NAME, ENGINE_VERSION, MAX_FRAMES_IN_FLIGHT, VALIDATION_ENABLED};
+use crate::rendering::memory;
+use crate::rendering::vertex::UniformBufferObject;
 use crate::utils;
 
 
@@ -29,7 +31,8 @@ pub struct RenderingState
     pub window : Window,
     vulkan_context : VulkanContext,
     logical_device : ash::Device,
-    deletion_queue : DeletionQueue
+    deletion_queue : DeletionQueue,
+    start_time : std::time::Instant
 }
 
 impl RenderingState
@@ -54,7 +57,8 @@ impl RenderingState
             window:window, 
             vulkan_context:vulkan_context, 
             logical_device,
-            deletion_queue:deletion_queue
+            deletion_queue:deletion_queue,
+            start_time: std::time::Instant::now()
         })
     }
 
@@ -71,6 +75,32 @@ impl RenderingState
         let device = &self.logical_device;
         let sync_frame_index = ctx.current_frame % MAX_FRAMES_IN_FLIGHT;
         let curr_cmd_buf = ctx.command_buffers[sync_frame_index];
+        let current_ubo_memory = ctx.uniform_buffers[sync_frame_index].1;
+        let extent = ctx.swapchain.as_ref().unwrap().extent;
+        let aspect = extent.width as f32 / extent.height as f32;
+
+        //simulate change in scene
+        let time = self.start_time.elapsed().as_secs_f32();
+        let model_matrix = cgmath::Matrix4::from_angle_z(cgmath::Deg(45.0 * time));
+        let view_matrix =cgmath::Matrix4::look_at_rh(
+            cgmath::Point3::new(2.0, 2.0, 2.0), // Camera position
+            cgmath::Point3::new(0.0, 0.0, 0.0), // Look at center
+            cgmath::Vector3::unit_z(),          // Up direction
+        ); 
+        let mut proj_matrix = cgmath::perspective(cgmath::Deg(45.0), aspect, 0.1, 10.0);
+        // VULKAN CORRECTION: GLM/cgmath was designed for OpenGL. 
+        // OpenGL's Y clip coordinate is inverted compared to Vulkan.
+        proj_matrix[1][1] *= -1.0;
+        
+        let ubo_data = UniformBufferObject{
+            model:model_matrix,
+            view:view_matrix,
+            proj:proj_matrix
+        };
+        let current_ubo_memory = ctx.uniform_buffers[sync_frame_index].1;
+        unsafe {
+            memory::map_and_copy(&self.logical_device, current_ubo_memory, &[ubo_data])?;
+        }
 
         //resize checks
         let current_size = self.window.inner_size();
@@ -155,7 +185,7 @@ impl RenderingState
         };
 
         // Clear image command
-        let clear_color_arr = [vk::ClearValue{color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] }}];
+        let clear_color_arr = [vk::ClearValue{color: vk::ClearColorValue { float32: [0.2, 0.3, 0.3, 1.0] }}];
 
         let render_pass_info = vk::RenderPassBeginInfo::default()
             .render_pass(ctx.render_pass)
@@ -169,6 +199,19 @@ impl RenderingState
             device.cmd_begin_render_pass(curr_cmd_buf, &render_pass_info, vk::SubpassContents::INLINE);
             device.cmd_bind_pipeline(curr_cmd_buf, vk::PipelineBindPoint::GRAPHICS, ctx.graphics_pipeline);
             
+            if let Some((vertex_buffer, _)) = ctx.vertex_buffer {
+                device.cmd_bind_vertex_buffers(curr_cmd_buf, 0, &[vertex_buffer], &[0]);
+            }
+            
+            device.cmd_bind_descriptor_sets(
+                curr_cmd_buf, 
+                vk::PipelineBindPoint::GRAPHICS, 
+                ctx.pipeline_layout, 
+                0,
+                &[ctx.descriptor_sets[sync_frame_index]], 
+                &[]
+            );
+
             let viewport = vk::Viewport {
                 x: 0.0,
                 y: 0.0,
@@ -185,7 +228,7 @@ impl RenderingState
             device.cmd_set_scissor(curr_cmd_buf, 0, &[scissor]);
             
             
-            device.cmd_draw(curr_cmd_buf, 3, 1, 0, 0);
+            device.cmd_draw(curr_cmd_buf, 6, 1, 0, 0);
             device.cmd_end_render_pass(curr_cmd_buf);
         }
 

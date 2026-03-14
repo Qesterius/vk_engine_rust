@@ -1,15 +1,22 @@
 use crate::config::{MAX_FRAMES_IN_FLIGHT, VALIDATION_ENABLED};
-use crate::rendering::swapchain;
+use crate::rendering::vertex::UniformBufferObject;
+use super::buffer;
+use super::memory;
+use super::swapchain;
+use super::vertex::Vertex;
 use crate::utils::vk_to_cstr;
 use super::cleanup::DeletionQueue;
 use crate::utils;
 use core::fmt;
 use super::pipeline::PipelineBuilder;
+use super::descriptor;
 
 use anyhow::anyhow;
 use anyhow::{ Ok, Result };
+use ash::vk::{DescriptorPool, DescriptorSet, DescriptorSetLayout};
 use ash::vk::{ImageView, LogicOp};
 use ash::{ Instance, khr::surface, vk::{ self, PhysicalDevice } };
+use cgmath::num_traits::ToPrimitive;
 use log::{ error, info, warn };
 use raw_window_handle::{ HasDisplayHandle, HasWindowHandle };
 use std::ffi::{ CStr, c_void };
@@ -37,6 +44,11 @@ pub(crate) struct VulkanContext {
     pub(crate) render_pass: vk::RenderPass,
     pub(crate) graphics_pipeline: vk::Pipeline,
     pub(crate) pipeline_layout: vk::PipelineLayout,
+    pub(crate) vertex_buffer: Option<(vk::Buffer, vk::DeviceMemory)>,
+    pub(crate) descriptor_set_layout: vk::DescriptorSetLayout,
+    pub(crate) descriptor_pool: vk::DescriptorPool,
+    pub(crate) descriptor_sets: Vec<vk::DescriptorSet>, //one per frame in flight
+    pub(crate) uniform_buffers: Vec<(vk::Buffer, vk::DeviceMemory)> //one per frame in flight
 }
 
 impl fmt::Debug for VulkanContext {
@@ -114,13 +126,32 @@ impl VulkanContext {
         //command pool/buffer
         let (command_pool, command_buffers) = setup_command_buffers(&logical_device, q_family_indices, deletion_queue)?;
         
+
+        let vertices = [
+            // Triangle 1
+            Vertex::new([-0.5, -0.5, 0.0], [1.0, 0.0, 0.0]), // Top Left (inverted Y)
+            Vertex::new([ 0.5, -0.5, 0.0], [0.0, 1.0, 0.0]), // Top Right
+            Vertex::new([ 0.5,  0.5, 0.0], [0.0, 0.0, 1.0]), // Bottom Right
+            // Triangle 2
+            Vertex::new([ 0.5,  0.5, 0.0], [0.0, 0.0, 1.0]), // Bottom Right
+            Vertex::new([-0.5,  0.5, 0.0], [1.0, 1.0, 1.0]), // Bottom Left
+            Vertex::new([-0.5, -0.5, 0.0], [1.0, 0.0, 0.0]), // Top Left
+        ];
+        let vertex_buffer = unsafe { create_vertex_buffer(instance,  &logical_device, physical_device, &vertices, deletion_queue) };
+        
+        let (descriptor_set_layout,
+            descriptor_pool, 
+            descriptor_sets, 
+            uniform_buffers) = unsafe { create_descriptor_resources(&logical_device, instance, physical_device, deletion_queue) }?;
+        
         // gpu cpu synchronization
         let (image_available_semaphores, 
             rendering_finished_semaphores,
             frame_in_flight_fences,
             images_in_flight_fences) = setup_sync_objects(&logical_device, swapchain.images.len(), deletion_queue)?;        
-
-        let (graphics_pipeline, pipeline_layout) = create_triangle_pipeline(&logical_device, render_pass, deletion_queue)?;
+        
+        let descriptor_set_layouts = vec![descriptor_set_layout];
+        let (graphics_pipeline, pipeline_layout) = create_triangle_pipeline(&logical_device, render_pass, descriptor_set_layouts, deletion_queue)?;
         //return
         let context = Self {
             surface: surface,
@@ -140,6 +171,11 @@ impl VulkanContext {
             graphics_pipeline: graphics_pipeline,
             pipeline_layout: pipeline_layout,
             debug_utils: debug_utils,
+            vertex_buffer: Some(vertex_buffer?),
+            descriptor_pool: descriptor_pool,
+            descriptor_set_layout : descriptor_set_layout,
+            descriptor_sets : descriptor_sets,
+            uniform_buffers: uniform_buffers
         };
 
         Ok((context, logical_device))
@@ -186,17 +222,37 @@ impl VulkanContext {
 }
 
 // pipeline
-pub fn create_triangle_pipeline(logical_device: &ash::Device, render_pass: vk::RenderPass, deletion_queue: &mut DeletionQueue) -> Result<(vk::Pipeline, vk::PipelineLayout)> {
-    let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
+/// Creates a graphics pipeline for rendering triangles.
+///
+/// This function creates a complete graphics pipeline with vertex and fragment shaders,
+/// vertex input bindings and attributes, and the specified descriptor set layouts.
+/// It also handles proper cleanup of shader modules and pipeline resources.
+///
+/// # Arguments
+/// * `logical_device` - The Vulkan logical device used to create the pipeline
+/// * `render_pass` - The render pass that the pipeline will be compatible with
+/// * `descriptor_set_layouts` - Array of descriptor set layouts for shader resources
+/// * `deletion_queue` - Queue for managing cleanup of pipeline resources
+///
+/// # Returns
+/// A tuple containing the created graphics pipeline and its layout
+pub fn create_triangle_pipeline(logical_device: &ash::Device, render_pass: vk::RenderPass, descriptor_set_layouts : Vec<DescriptorSetLayout>, deletion_queue: &mut DeletionQueue) -> Result<(vk::Pipeline, vk::PipelineLayout)> {
+    let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
+        .set_layouts(&descriptor_set_layouts);
     let pipeline_layout = (unsafe { logical_device.create_pipeline_layout(&pipeline_layout_info, None) })?;
 
     let vert_module = (unsafe { load_shader_module(&logical_device, "src/rendering/shaders/vert.spv") })?;
     let frag_module = (unsafe { load_shader_module(&logical_device, "src/rendering/shaders/frag.spv") })?;
+    let bindings = Vertex::get_binding_description();
+    let attributes = Vertex::get_attribute_descriptions();
 
     let pipeline_builder = PipelineBuilder::new(pipeline_layout)
         .with_shader(vert_module, vk::ShaderStageFlags::VERTEX)
-        .with_shader(frag_module, vk::ShaderStageFlags::FRAGMENT);
+        .with_shader(frag_module, vk::ShaderStageFlags::FRAGMENT)
+        .with_binding_descriptions(vec![bindings])
+        .with_attribute_descriptions(attributes.to_vec());
     //rest is default
+
 
     let pipeline = pipeline_builder.build(logical_device, render_pass)?; 
 
@@ -210,7 +266,6 @@ pub fn create_triangle_pipeline(logical_device: &ash::Device, render_pass: vk::R
      });
     Ok((pipeline, pipeline_layout))
 }
-
 
 
 //logical device
@@ -549,4 +604,77 @@ pub unsafe fn load_shader_module(device: &ash::Device, path: &str) -> Result<vk:
     let file = std::fs::File::open(path).map_err(|e| anyhow!("Failed to open shader file {}:{}", path, e))?;
     let words = ash::util::read_spv(&mut std::io::BufReader::new(file)).map_err(|e| anyhow!("Failed to read shader file {}:{}", path, e))?;
     Ok(unsafe { create_shader_module(device, &words) }?)
+}
+
+//vertex buffer
+unsafe fn create_vertex_buffer(instance: &ash::Instance, device: &ash::Device, physical_device: vk::PhysicalDevice, vertices: &[Vertex], deletion_queue: &mut DeletionQueue) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+    let buffer_size = (std::mem::size_of::<Vertex>() * vertices.len()) as vk::DeviceSize;
+
+    let (vertex_buffer, vertex_buffer_memory) = buffer::create_buffer(
+        instance,
+        device,
+        physical_device,
+        buffer_size,
+        vk::BufferUsageFlags::VERTEX_BUFFER,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
+    )?;
+
+    unsafe {
+        memory::map_and_copy(device, vertex_buffer_memory, vertices)?;
+    }
+
+    let device_clone = device.clone();
+    deletion_queue.push(move || unsafe {
+        device_clone.destroy_buffer(vertex_buffer, None);
+        device_clone.free_memory(vertex_buffer_memory, None);
+    });
+
+    Ok((vertex_buffer, vertex_buffer_memory))
+}
+
+unsafe fn create_descriptor_resources(logical_device: &ash::Device, instance: &ash::Instance, physical_device: vk::PhysicalDevice, deletion_queue: &mut DeletionQueue)
+-> Result<(DescriptorSetLayout, DescriptorPool, Vec<DescriptorSet>,Vec<(vk::Buffer, vk::DeviceMemory)>)>{
+    let descriptor_layout_builder = descriptor::DescriptorLayoutBuilder::new()
+        .add_binding(
+             0,
+             vk::DescriptorType::UNIFORM_BUFFER,
+             vk::ShaderStageFlags::VERTEX);
+    let descriptor_set_layout = descriptor_layout_builder.build(&logical_device)?;
+    let descriptor_pool = descriptor::create_descriptor_pool(&logical_device, MAX_FRAMES_IN_FLIGHT as u32)?;
+    let descriptor_sets = descriptor::allocate_descriptor_sets(&logical_device, descriptor_pool, descriptor_set_layout, MAX_FRAMES_IN_FLIGHT as u32)?;
+    
+    //bufers
+    let mut buffers = Vec::new();
+    let ubo_size = std::mem::size_of::<UniformBufferObject>() as vk::DeviceSize;
+    for i in 0..MAX_FRAMES_IN_FLIGHT{
+        let (buf, mem) = buffer::create_buffer(
+            instance,
+            logical_device, 
+            physical_device, 
+            ubo_size, 
+            vk::BufferUsageFlags::UNIFORM_BUFFER, 
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
+        buffers.push((buf, mem));
+
+        descriptor::update_buffer_descriptor_set(
+            logical_device, 
+            descriptor_sets[i], 
+            buffers[i].0, 
+            vk::DescriptorType::UNIFORM_BUFFER,
+            0
+            );
+        let logical_device_clone = logical_device.clone();
+        deletion_queue.push(move || unsafe {
+            logical_device_clone.destroy_buffer(buf, None);
+            logical_device_clone.free_memory(mem, None);
+        });
+    }
+    let logical_device_clone = logical_device.clone();
+    deletion_queue.push(move || unsafe{
+        logical_device_clone.destroy_descriptor_pool(descriptor_pool, None);
+        logical_device_clone.destroy_descriptor_set_layout(descriptor_set_layout, None);
+    }); 
+
+
+    return Ok((descriptor_set_layout, descriptor_pool, descriptor_sets, buffers));
 }
