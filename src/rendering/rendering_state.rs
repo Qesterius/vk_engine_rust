@@ -9,6 +9,7 @@ use raw_window_handle::{ HasDisplayHandle, HasWindowHandle };
 
 use super::vulkan_context::VulkanContext;
 use super::cleanup::DeletionQueue;
+use crate::component_system::simple_component_manager::ComponentManager;
 use crate::config::{APPLICATION_NAME, ENGINE_NAME, ENGINE_VERSION, MAX_FRAMES_IN_FLIGHT, VALIDATION_ENABLED};
 use crate::rendering::memory;
 use crate::rendering::vertex::UniformBufferObject;
@@ -27,11 +28,11 @@ const VALIDATION_LAYER: &std::ffi::CStr = c"VK_LAYER_KHRONOS_validation";
 pub struct RenderingState
 {
     entry: ash::Entry,
-    instance: ash::Instance,
+    pub instance: ash::Instance,
     pub window : Window,
-    vulkan_context : VulkanContext,
-    logical_device : ash::Device,
-    deletion_queue : DeletionQueue,
+    pub vulkan_context : VulkanContext,
+    pub logical_device : ash::Device,
+    pub deletion_queue : DeletionQueue,
     start_time : std::time::Instant
 }
 
@@ -62,7 +63,7 @@ impl RenderingState
         })
     }
 
-    pub unsafe fn render(&mut self) -> Result<()> {
+    pub unsafe fn render(&mut self, component_manager: &ComponentManager) -> Result<()> {
         /*
         1. CPU Synchronization: The CPU waits for the GPU to finish its previous work (in_flight_fence).
         2. Image Acquisition: We ask the Swapchain for an image index to draw on (acquire_next_image).
@@ -73,34 +74,26 @@ impl RenderingState
 
         let ctx = &mut self.vulkan_context;
         let device = &self.logical_device;
+
+        // 1. Setup frame-specific indices and handles
         let sync_frame_index = ctx.current_frame % MAX_FRAMES_IN_FLIGHT;
         let curr_cmd_buf = ctx.command_buffers[sync_frame_index];
         let current_ubo_memory = ctx.uniform_buffers[sync_frame_index].1;
+
+        
+        // 2. Calculate Camera Matrices (Static for this frame)
         let extent = ctx.swapchain.as_ref().unwrap().extent;
         let aspect = extent.width as f32 / extent.height as f32;
-
-        //simulate change in scene
-        let time = self.start_time.elapsed().as_secs_f32();
-        let model_matrix = cgmath::Matrix4::from_angle_z(cgmath::Deg(45.0 * time));
-        let view_matrix =cgmath::Matrix4::look_at_rh(
-            cgmath::Point3::new(2.0, 2.0, 2.0), // Camera position
-            cgmath::Point3::new(0.0, 0.0, 0.0), // Look at center
-            cgmath::Vector3::unit_z(),          // Up direction
-        ); 
-        let mut proj_matrix = cgmath::perspective(cgmath::Deg(45.0), aspect, 0.1, 10.0);
-        // VULKAN CORRECTION: GLM/cgmath was designed for OpenGL. 
-        // OpenGL's Y clip coordinate is inverted compared to Vulkan.
-        proj_matrix[1][1] *= -1.0;
         
-        let ubo_data = UniformBufferObject{
-            model:model_matrix,
-            view:view_matrix,
-            proj:proj_matrix
-        };
-        let current_ubo_memory = ctx.uniform_buffers[sync_frame_index].1;
-        unsafe {
-            memory::map_and_copy(&self.logical_device, current_ubo_memory, &[ubo_data])?;
-        }
+        let view_matrix = cgmath::Matrix4::look_at_rh(
+            cgmath::Point3::new(2.0, 2.0, 2.0),
+            cgmath::Point3::new(0.0, 0.0, 0.0),
+            cgmath::Vector3::unit_z(),
+        );
+        
+        let mut proj_matrix = cgmath::perspective(cgmath::Deg(45.0), aspect, 0.1, 10.0);
+        proj_matrix[1][1] *= -1.0; // Vulkan Y-flip
+
 
         //resize checks
         let current_size = self.window.inner_size();
@@ -175,14 +168,6 @@ impl RenderingState
         .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         unsafe { device.begin_command_buffer(curr_cmd_buf, &begin_info)? };
 
-        let image = sc.images[image_index as usize];
-        let range = vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            base_mip_level: 0,
-            level_count: 1,
-            base_array_layer: 0,
-            layer_count: 1,
-        };
 
         // Clear image command
         let clear_color_arr = [vk::ClearValue{color: vk::ClearColorValue { float32: [0.2, 0.3, 0.3, 1.0] }}];
@@ -198,20 +183,7 @@ impl RenderingState
         unsafe{
             device.cmd_begin_render_pass(curr_cmd_buf, &render_pass_info, vk::SubpassContents::INLINE);
             device.cmd_bind_pipeline(curr_cmd_buf, vk::PipelineBindPoint::GRAPHICS, ctx.graphics_pipeline);
-            
-            if let Some((vertex_buffer, _)) = ctx.vertex_buffer {
-                device.cmd_bind_vertex_buffers(curr_cmd_buf, 0, &[vertex_buffer], &[0]);
-            }
-            
-            device.cmd_bind_descriptor_sets(
-                curr_cmd_buf, 
-                vk::PipelineBindPoint::GRAPHICS, 
-                ctx.pipeline_layout, 
-                0,
-                &[ctx.descriptor_sets[sync_frame_index]], 
-                &[]
-            );
-
+           
             let viewport = vk::Viewport {
                 x: 0.0,
                 y: 0.0,
@@ -227,8 +199,34 @@ impl RenderingState
             };
             device.cmd_set_scissor(curr_cmd_buf, 0, &[scissor]);
             
-            
-            device.cmd_draw(curr_cmd_buf, 6, 1, 0, 0);
+            device.cmd_bind_descriptor_sets(
+                curr_cmd_buf, 
+                vk::PipelineBindPoint::GRAPHICS, 
+                ctx.pipeline_layout, 
+                0,
+                &[ctx.descriptor_sets[sync_frame_index]], 
+                &[]
+            );
+
+            //draw components
+            for (i, mesh_opt) in component_manager.meshes.iter().enumerate(){
+                if let Some(mesh) = mesh_opt{
+                    if let Some(transform) = component_manager.transforms.get(i).and_then(|t| t.as_ref()){
+
+                        let model_matrix = transform.to_matrix();
+                        let ubo_data = UniformBufferObject{
+                            model:model_matrix,
+                            view:view_matrix,
+                            proj:proj_matrix
+                        };
+                        //each object overwrites one ubo buffer. it should change
+                        memory::map_and_copy(&self.logical_device, current_ubo_memory, &[ubo_data])?;
+                        mesh.bind(device, curr_cmd_buf);
+                        mesh.draw(device, curr_cmd_buf);
+                    }
+
+                }
+            }
             device.cmd_end_render_pass(curr_cmd_buf);
         }
 

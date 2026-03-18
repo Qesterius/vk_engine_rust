@@ -1,9 +1,9 @@
 mod utils;
 mod config;
 mod rendering;
-
-use crate::rendering::rendering_state::RenderingState;
-
+mod component_system;
+mod engine;
+use crate::engine::Engine;
 use crate::config::{APPLICATION_TITLE};
 use log::{error, info, warn};
 use winit::application::ApplicationHandler;
@@ -16,27 +16,28 @@ fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     log::info!("Logger initialized");
     let event_loop = EventLoop::new()?;
-    let mut app = App{ state: None};
+    let mut app = App{ engine: None};
     event_loop.run_app(&mut app)?;
     Ok(())
 }
 struct App
 {
-    state: Option<RenderingState>
+    pub engine: Option<Engine>
 }
 
 impl ApplicationHandler for App{
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_none(){
+        if self.engine.is_none(){
+
             let window_attrs = WindowAttributes::default().with_title(APPLICATION_TITLE);
             let window = event_loop.create_window(window_attrs).expect("Failed to create window");
 
-            match unsafe{ RenderingState::new(window)}{
-                core::result::Result::Ok(state) => {
-                    self.state = Some(state);
+            match Engine::new(window){
+                core::result::Result::Ok(engine) => {
+                    self.engine = Some(engine);
                 }
                 core::result::Result::Err(e) => {
-                    error!("Failed to initialize Vulkan: {}", e);
+                    error!("Engine Init error: {}", e);
                     event_loop.exit();
                 }
             }
@@ -56,9 +57,10 @@ impl ApplicationHandler for App{
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                if let Some(state) = &mut self.state{
-                    unsafe{ state.render().expect("Failed to render frame");}
-                    state.window.request_redraw();
+                if let Some(engine) = &mut self.engine{
+                    engine.update();
+                    unsafe{ engine.render().expect("Failed to render frame");}
+                    engine.rendering_state.window.request_redraw();
                 }
             }
             _ => (),
@@ -66,8 +68,8 @@ impl ApplicationHandler for App{
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(mut state) = self.state.take(){
-            unsafe{state.destroy();}
+        if let Some(mut engine) = self.engine.take(){
+            unsafe{engine.destroy();}
         }
     }
 }

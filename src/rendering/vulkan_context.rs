@@ -44,7 +44,6 @@ pub(crate) struct VulkanContext {
     pub(crate) render_pass: vk::RenderPass,
     pub(crate) graphics_pipeline: vk::Pipeline,
     pub(crate) pipeline_layout: vk::PipelineLayout,
-    pub(crate) vertex_buffer: Option<(vk::Buffer, vk::DeviceMemory)>,
     pub(crate) descriptor_set_layout: vk::DescriptorSetLayout,
     pub(crate) descriptor_pool: vk::DescriptorPool,
     pub(crate) descriptor_sets: Vec<vk::DescriptorSet>, //one per frame in flight
@@ -126,19 +125,7 @@ impl VulkanContext {
         //command pool/buffer
         let (command_pool, command_buffers) = setup_command_buffers(&logical_device, q_family_indices, deletion_queue)?;
         
-
-        let vertices = [
-            // Triangle 1
-            Vertex::new([-0.5, -0.5, 0.0], [1.0, 0.0, 0.0]), // Top Left (inverted Y)
-            Vertex::new([ 0.5, -0.5, 0.0], [0.0, 1.0, 0.0]), // Top Right
-            Vertex::new([ 0.5,  0.5, 0.0], [0.0, 0.0, 1.0]), // Bottom Right
-            // Triangle 2
-            Vertex::new([ 0.5,  0.5, 0.0], [0.0, 0.0, 1.0]), // Bottom Right
-            Vertex::new([-0.5,  0.5, 0.0], [1.0, 1.0, 1.0]), // Bottom Left
-            Vertex::new([-0.5, -0.5, 0.0], [1.0, 0.0, 0.0]), // Top Left
-        ];
-        let vertex_buffer = unsafe { create_vertex_buffer(instance,  &logical_device, physical_device, &vertices, deletion_queue) };
-        
+             
         let (descriptor_set_layout,
             descriptor_pool, 
             descriptor_sets, 
@@ -171,7 +158,6 @@ impl VulkanContext {
             graphics_pipeline: graphics_pipeline,
             pipeline_layout: pipeline_layout,
             debug_utils: debug_utils,
-            vertex_buffer: Some(vertex_buffer?),
             descriptor_pool: descriptor_pool,
             descriptor_set_layout : descriptor_set_layout,
             descriptor_sets : descriptor_sets,
@@ -607,7 +593,7 @@ pub unsafe fn load_shader_module(device: &ash::Device, path: &str) -> Result<vk:
 }
 
 //vertex buffer
-unsafe fn create_vertex_buffer(instance: &ash::Instance, device: &ash::Device, physical_device: vk::PhysicalDevice, vertices: &[Vertex], deletion_queue: &mut DeletionQueue) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+pub unsafe fn create_vertex_buffer(instance: &ash::Instance, device: &ash::Device, physical_device: vk::PhysicalDevice, vertices: &[Vertex], deletion_queue: &mut DeletionQueue) -> Result<(vk::Buffer, vk::DeviceMemory)> {
     let buffer_size = (std::mem::size_of::<Vertex>() * vertices.len()) as vk::DeviceSize;
 
     let (vertex_buffer, vertex_buffer_memory) = buffer::create_buffer(
@@ -630,6 +616,32 @@ unsafe fn create_vertex_buffer(instance: &ash::Instance, device: &ash::Device, p
     });
 
     Ok((vertex_buffer, vertex_buffer_memory))
+}
+
+//indices buffer
+pub unsafe fn create_indices_buffer(instance: &ash::Instance, device: &ash::Device, physical_device: vk::PhysicalDevice, indices: &[u32], deletion_queue: &mut DeletionQueue) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+    let buffer_size = (std::mem::size_of::<u32>() * indices.len()) as vk::DeviceSize;
+
+    let (indice_buffer, indice_buffer_memory) = buffer::create_buffer(
+        instance,
+        device,
+        physical_device,
+        buffer_size,
+        vk::BufferUsageFlags::INDEX_BUFFER,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
+    )?;
+
+    unsafe {
+        memory::map_and_copy(device, indice_buffer_memory, indices)?;
+    }
+
+    let device_clone = device.clone();
+    deletion_queue.push(move || unsafe {
+        device_clone.destroy_buffer(indice_buffer, None);
+        device_clone.free_memory(indice_buffer_memory, None);
+    });
+
+    Ok((indice_buffer, indice_buffer_memory))
 }
 
 unsafe fn create_descriptor_resources(logical_device: &ash::Device, instance: &ash::Instance, physical_device: vk::PhysicalDevice, deletion_queue: &mut DeletionQueue)
