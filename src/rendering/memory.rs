@@ -1,5 +1,6 @@
 use ash::vk;
 use anyhow::Result;
+use anyhow::Ok;
 
 /// Finds a memory type index that supports both the required bits (from the resource)
 /// and the desired properties (e.g. Host Visible, Device Local).
@@ -15,13 +16,10 @@ use anyhow::Result;
 /// * `type_filter` - A bitmask of memory type bits that are acceptable for the resource
 /// * `properties` - The required memory properties (e.g., HOST_VISIBLE, DEVICE_LOCAL)
 pub fn find_memory_type(
-    instance: &ash::Instance,
-    physical_device: vk::PhysicalDevice,
+    mem_properties: &vk::PhysicalDeviceMemoryProperties,
     type_filter: u32,
     properties: vk::MemoryPropertyFlags,
 ) -> Result<u32> {
-    let mem_properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
-
     for (i, memory_type) in mem_properties.memory_types.iter().enumerate() {
         if (type_filter & (1 << i)) != 0 && (memory_type.property_flags & properties) == properties
         {

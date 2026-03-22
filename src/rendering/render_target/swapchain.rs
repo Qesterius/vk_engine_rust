@@ -1,29 +1,24 @@
 use ash::{Instance, vk, Entry};
 use winit::window::Window;
 use anyhow::Result;
-use crate::config::{APPLICATION_NAME, ENGINE_NAME, ENGINE_VERSION};
-use super::vulkan_context;
+use super::super::vulkan_context;
 
 
 #[derive(Clone)]
-pub struct SafeSwapchain{
+pub struct SwapchainState{
     pub swapchain: vk::SwapchainKHR,
     pub loader: ash::khr::swapchain::Device,
     pub images: Vec<vk::Image>,
     pub image_views: Vec<vk::ImageView>,
-    pub framebuffers: Vec<vk::Framebuffer>,
     pub extent: vk::Extent2D,
-    device: ash::Device,
     pub format: vk::Format,
+    device: ash::Device,
 }
-impl Drop for SafeSwapchain {
+impl Drop for SwapchainState {
     fn drop(&mut self) {
         unsafe {
             for &view in &self.image_views {
                 self.device.destroy_image_view(view, None);
-            }
-            for &fb in &self.framebuffers {
-                self.device.destroy_framebuffer(fb, None);
             }
             self.loader.destroy_swapchain(self.swapchain, None);
         }
@@ -44,17 +39,15 @@ pub fn get_swapchain_details(physical_device: vk::PhysicalDevice, surface: vk::S
     })
 }
 
-impl SafeSwapchain {
+impl SwapchainState {
     pub unsafe fn new(
         swapchain_details: SwapchainSupportDetails,
-        window: &Window,
         instance: &Instance,
         physical_device: vk::PhysicalDevice,
         logical_device: &ash::Device,
         surface: vk::SurfaceKHR,
         surface_loader: &ash::khr::surface::Instance,
         size: winit::dpi::PhysicalSize<u32>,
-        render_pass: vk::RenderPass
     ) -> Result<Self> {
 
         let indices = (unsafe {
@@ -131,19 +124,7 @@ impl SafeSwapchain {
 
             swapchain_image_views.push(image_view);
         }
-        let mut framebuffers = Vec::with_capacity(swapchain_images.len());
-        for &image_view in &swapchain_image_views {
-            let attachments = [image_view];
-            let framebuffer_info = vk::FramebufferCreateInfo
-                ::default()
-                .render_pass(render_pass)
-                .attachments(&attachments)
-                .width(extent.width)
-                .height(extent.height)
-                .layers(1);
-            let framebuffer = (unsafe { logical_device.create_framebuffer(&framebuffer_info, None) })?;
-            framebuffers.push(framebuffer);
-        }
+       
 
         Ok(Self {
             swapchain,
@@ -153,7 +134,6 @@ impl SafeSwapchain {
             device: logical_device.clone(),
             extent: extent,
             format: surface_format.format,
-            framebuffers: framebuffers,
         })
     }
 }

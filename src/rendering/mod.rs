@@ -3,7 +3,7 @@ pub mod rendering_state;
 pub mod pipeline;
 pub mod cleanup;
 pub mod vertex;
-pub mod swapchain;
+pub mod render_target;
 pub mod memory;
 pub mod buffer;
 pub mod descriptor;

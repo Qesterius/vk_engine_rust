@@ -37,7 +37,7 @@ impl Mesh{
     }
 
     //basic shapes
-    pub fn new_cube( instance: &ash::Instance, device: &ash::Device, physical_device: vk::PhysicalDevice, deletion_queue :&mut DeletionQueue) -> Result<Self>{
+    pub fn new_cube( ph_mem_props : &vk::PhysicalDeviceMemoryProperties, device: &ash::Device, deletion_queue :&mut DeletionQueue) -> Result<Self>{
           //1x1x1 cube
         let vertices = [
             // Front face
@@ -60,8 +60,8 @@ impl Mesh{
             3, 2, 6, 6, 7, 3, // Top
         ]; 
 
-        let (index_buffer,index_buffer_memory) = unsafe { create_indices_buffer(instance,  &device, physical_device, &indices, deletion_queue)? };
-        let (vertex_buffer, vertex_buffer_memory) = unsafe { create_vertex_buffer(instance,  &device, physical_device, &vertices, deletion_queue)? };
+        let (index_buffer,index_buffer_memory) = unsafe { create_indices_buffer(ph_mem_props, &device, &indices, deletion_queue)? };
+        let (vertex_buffer, vertex_buffer_memory) = unsafe { create_vertex_buffer(ph_mem_props, &device, &vertices, deletion_queue)? };
         Ok(Self { 
             vertex_buffer,
             vertex_buffer_memory,

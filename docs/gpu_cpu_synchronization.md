@@ -1,64 +1,48 @@
 # Multiexecution & Resource Synchronization
 
-CPU and GPU are essentially separate units of execution. The GPU renders to the screen while the CPU processes logic and pushes draw requests. Because they run at different speeds, we must synchronize them to avoid race conditions. In our engine, synchronization is split into three categories: **CPU-to-GPU**, **GPU-to-GPU**, and **Internal GPU Memory Access**.
+## 1. The Core Shift: Why `MAX_FRAMES_IN_FLIGHT`?
 
-## 1. Synchronization Primitives
+In our previous logic, we tried to tie semaphores to the **Swapchain Image Index**. We have moved away from this because the number of swapchain images can change (e.g., from 2 to 3) during a resize, but our **Processing Slots** (Frames in Flight) are constant.
 
-### Fences (`ash::vk::Fence`)
+We now treat synchronization as **"Pipelines of Work."** If `MAX_FRAMES_IN_FLIGHT` is 2, we have two "conveyor belts." Each belt has its own Fence, its own "Image Available" Semaphore, and its own "Render Finished" Semaphore.
 
-Fences are the **"CPU Brake."** They allow the GPU to signal the CPU when a task is complete. We use these to stop the CPU from "overrunning" the GPU. When the CPU waits on a fence, it enters a sleep state until a hardware signal from the GPU interrupts it.
-
-* **Scope:** GPU $\rightarrow$ CPU.
-
-### Semaphores (`ash::vk::Semaphore`)
-
-Semaphores synchronize work **entirely inside the GPU**. They are "tokens" passed between different GPU queues or the Presentation Engine. The CPU never "waits" on these; it simply tells the GPU: "Don't start Task B until Task A signals this semaphore."
-
-* **Scope:** GPU $\rightarrow$ GPU / OS.
-
-### Pipeline Barriers (`ash::vk::ImageMemoryBarrier`)
-
-While fences and semaphores synchronize **execution**, Barriers synchronize **memory**. Modern GPUs are highly parallel; a barrier tells the GPU hardware to flush caches and change how it "interprets" a block of memory (e.g., shifting an image from "Generic Memory" to "Ready for Clear Color").
+### Why this works:
+A Semaphore is just a GPU-side signal. When we tell the GPU to "Wait for Image Available" and then "Signal Render Finished," it doesn't matter which physical image is being used. The GPU just needs to know that **Slot A** is busy. By the time the CPU tries to reuse **Slot A** (2 frames later), the `in_flight_fence` ensures that the previous work—including the semaphore signals—is 100% complete.
 
 ---
 
-## 2. The Three-Way Handshake
+## 2. The Updated Synchronization Setup
 
-Our engine uses a fixed number of **Frame Slots** (e.g., 2) to manage CPU work, while the number of **Swapchain Images** is determined dynamically by the hardware (usually `min_image_count + 1`).
+### A. Frame-Based Objects (`MAX_FRAMES_IN_FLIGHT`)
+These are the "Permanent" sync objects stored in `RenderingState`.
+* **`image_available_semaphores`**: GPU waits here. Signals when the OS gives us *any* image to draw on.
+* **`rendering_finished_semaphores`**: OS/Present waits here. Signals when the GPU is done drawing to *that* image.
+* **`frame_in_flight_fences`**: CPU waits here. Signals when the entire GPU "Slot" (Command Buffer + Semaphores) is done.
 
-### A. The Execution Sync (Frame Based)
+### B. Image-Based Mapping (`swapchain_image_count`)
+* **`images_in_flight_fences`**: This is **not** a collection of unique fences. It is a **List of Pointers (References)**. 
+    * If `image_index` 0 is being rendered by `sync_frame_index` 1, then `images_in_flight_fences[0]` points to `frame_in_flight_fences[1]`.
+    * This bridges the gap: it tells the CPU "Don't start a new frame on Image 0 if the Fence for the frame currently using Image 0 hasn't signaled yet."
 
-We use a fixed number of objects based on `MAX_FRAMES_IN_FLIGHT` to manage the CPU's work-ahead.
 
-* **`in_flight_fence`**: Ensures the CPU doesn't record into a Command Buffer that the GPU is currently reading.
-* **`image_available_semaphore`**: The OS signals this when it has physically released a swapchain image. The GPU waits on this before it starts its clear/render commands.
-
-### B. The Ownership Sync (Image Based)
-
-The Monitor often holds an image longer than the GPU takes to render. To handle this, we tie specific synchronization objects to the **Image Index** returned by the swapchain, not the Frame Slot.
-
-* **`rendering_finished_semaphore`**: One per swapchain image. The GPU signals this when rendering is complete. The Monitor waits on it before displaying the image.
-* **`images_in_flight_fences`**: A mapping array that tracks which `in_flight_fence` is currently protecting which physical image. This ensures the CPU won't reuse a piece of memory that is still being scanned out by the monitor.
 
 ---
 
-## 3. Order of Operations (The Render Loop)
+## 3. The New Order of Operations (The Render Loop)
 
-1. **Fence Wait:** CPU waits for `in_flight_fence[slot]`. (Wait for the GPU to finish the "slot").
-2. **Acquisition:** CPU calls `acquire_next_image`. It receives an `image_index` and assigns an `image_available_semaphore`.
-3. **Resource Check:** CPU checks `images_in_flight[image_index]`. If a fence is mapped to this image, it waits. This bridges the gap between the **Monitor** and the CPU.
-4. **Barrier 1:** GPU transitions the image to `TRANSFER_DST_OPTIMAL`. (Prepares memory for writing).
-5. **Submission:** * **Wait:** `image_available_semaphore`.
-* **Signal:** `rendering_finished_semaphore[image_index]`.
-* **Signal:** `in_flight_fence[slot]`.
-
-
-6. **Barrier 2:** GPU transitions the image to `PRESENT_SRC_KHR`. (Prepares memory for the monitor).
-7. **Present:** Monitor waits for `rendering_finished_semaphore[image_index]` then displays the pixels.
-
----
-
-### Why we use Image-Indexed Semaphores
-
-On high-performance hardware, the CPU can loop through its available Frame Slots faster than the Monitor's refresh rate. If we tied the "Finished" semaphore to the Frame Slot, we would risk "double-signaling" a semaphore that the Monitor is still using. By using an index-based semaphore, every physical image has its own signal flag, ensuring the Monitor and GPU never collide on the same sync object.
-
+1.  **CPU Slot Wait:** `device.wait_for_fences([frame_in_flight_fences[sync_frame_index]])`. 
+    * *Effect:* The CPU stops until the "Conveyor Belt" slot is empty.
+2.  **Acquisition:** `acquire_next_image`. 
+    * *Input:* `image_available_semaphores[sync_frame_index]`. 
+    * *Output:* `image_index`.
+3.  **The Image Shield:** Check `images_in_flight_fences[image_index]`. 
+    * If it's not null, the CPU waits for *that* fence. This ensures we don't accidentally start writing to a physical image that is still being presented by a *different* frame slot.
+4.  **The Link:** `images_in_flight_fences[image_index] = frame_in_flight_fences[sync_frame_index]`. 
+    * *Effect:* We "lock" this physical image to this frame slot's fence.
+5.  **Submission:**
+    * **Wait:** `image_available_semaphores[sync_frame_index]`.
+    * **Signal:** `rendering_finished_semaphores[sync_frame_index]`.
+    * **Fence:** `frame_in_flight_fences[sync_frame_index]`.
+6.  **Presentation:**
+    * **Wait:** `rendering_finished_semaphores[sync_frame_index]`.
+    * *Effect:* The Monitor waits until the GPU signals it's done before flipping the pixels.

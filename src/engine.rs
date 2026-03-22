@@ -1,5 +1,6 @@
 use crate::{component_system::{simple_component_manager::{self, ComponentManager}, transform::Transform}, rendering::{components::mesh::Mesh, rendering_state::{self, RenderingState}}};
 use anyhow::{Ok, Result};
+use log::info;
 use winit::window::Window;
 use cgmath::{Quaternion, Rotation3, Vector3};
 
@@ -16,9 +17,8 @@ impl Engine{
         let mut component_manager = ComponentManager::new()?;
         
         let simple_cube_mesh = Mesh::new_cube( //TODO: create asset manager and move this there
-            &rendering_state.instance, 
+            &rendering_state.vulkan_context.phys_memory_properties, 
             &rendering_state.logical_device,
-            rendering_state.vulkan_context.physical_device,
             &mut rendering_state.deletion_queue 
         )?;
 
@@ -54,7 +54,7 @@ impl Engine{
     }
 
     pub unsafe fn destroy(&mut self){
-        unsafe { self.rendering_state.destroy() }
-        unsafe { self.component_manager.destroy() }
+        self.component_manager.destroy();
+        info!("Engine shut down successfully.");
     }
 }

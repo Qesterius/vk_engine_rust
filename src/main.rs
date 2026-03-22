@@ -58,11 +58,14 @@ impl ApplicationHandler for App{
             }
             WindowEvent::RedrawRequested => {
                 if let Some(engine) = &mut self.engine{
-                    engine.update();
-                    unsafe{ engine.render().expect("Failed to render frame");}
+                    engine.update().expect("Failed update pass");
+                    engine.render().expect("Failed to render frame");
                     engine.rendering_state.window.request_redraw();
                 }
             }
+            // WindowEvent::Resized(size) =>{
+            // TODO: move resize from rendering state here
+            // }
             _ => (),
         }
     }

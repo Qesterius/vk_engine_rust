@@ -1,8 +1,9 @@
 use crate::config::{MAX_FRAMES_IN_FLIGHT, VALIDATION_ENABLED};
+use crate::rendering::memory::find_memory_type;
+use crate::rendering::render_target;
 use crate::rendering::vertex::UniformBufferObject;
 use super::buffer;
 use super::memory;
-use super::swapchain;
 use super::vertex::Vertex;
 use crate::utils::vk_to_cstr;
 use super::cleanup::DeletionQueue;
@@ -10,6 +11,7 @@ use crate::utils;
 use core::fmt;
 use super::pipeline::PipelineBuilder;
 use super::descriptor;
+use super::render_target::render_target::RenderTarget;
 
 use anyhow::anyhow;
 use anyhow::{ Ok, Result };
@@ -33,21 +35,13 @@ pub(crate) struct VulkanContext {
     pub(crate) physical_device: vk::PhysicalDevice,
     pub(crate) graphics_queue: vk::Queue,
     pub(crate) present_queue: vk::Queue,
-    pub(crate) swapchain: Option<swapchain::SafeSwapchain>,
-    pub(crate) image_available_semaphores: Vec<vk::Semaphore>,
-    pub(crate) rendering_finished_semaphores: Vec<vk::Semaphore>,
-    pub(crate) frame_in_flight_fences: Vec<vk::Fence>,
-    pub(crate) images_in_flight_fences: Vec<vk::Fence>,
-    pub(crate) current_frame: usize,
+    pub(crate) descriptor_set_layout: vk::DescriptorSetLayout,
     pub(crate) command_pool: vk::CommandPool,
-    pub(crate) command_buffers: Vec<vk::CommandBuffer>,
     pub(crate) render_pass: vk::RenderPass,
     pub(crate) graphics_pipeline: vk::Pipeline,
     pub(crate) pipeline_layout: vk::PipelineLayout,
-    pub(crate) descriptor_set_layout: vk::DescriptorSetLayout,
     pub(crate) descriptor_pool: vk::DescriptorPool,
-    pub(crate) descriptor_sets: Vec<vk::DescriptorSet>, //one per frame in flight
-    pub(crate) uniform_buffers: Vec<(vk::Buffer, vk::DeviceMemory)> //one per frame in flight
+    pub(crate) phys_memory_properties : vk::PhysicalDeviceMemoryProperties
 }
 
 impl fmt::Debug for VulkanContext {
@@ -67,6 +61,7 @@ impl VulkanContext {
         instance: &ash::Instance,
         deletion_queue: &mut DeletionQueue
     ) -> Result<(Self, ash::Device)> {
+
         //surface
         let surface_loader = surface::Instance::new(&entry, &instance);
         let surface = (unsafe {
@@ -96,47 +91,28 @@ impl VulkanContext {
            debug_utils = unsafe { setup_debugging(entry, instance, deletion_queue).ok() };
         }
         
-        //swapchain
-        let swapchain_details = (unsafe {
-            swapchain::get_swapchain_details(physical_device, surface, &surface_loader)
-        })?;
-
-        let surface_format = swapchain::get_swapchain_surface_format(&swapchain_details.formats);
+        //mem
+        let physical_memory_properties =  unsafe { instance.get_physical_device_memory_properties(physical_device) };
 
         //render pass
+        let swapchain_details = (unsafe {
+            render_target::swapchain::get_swapchain_details(physical_device, surface, &surface_loader)
+        })?;
+        let surface_format = render_target::swapchain::get_swapchain_surface_format(&swapchain_details.formats);
+
         let render_pass = (unsafe {
             create_render_pass(surface_format.format, &logical_device, deletion_queue)
         })?;
         
-        //swapchain
-        let swapchain = (unsafe {swapchain::SafeSwapchain::new(
-                swapchain_details,
-                window,
-                instance,
-                physical_device,
-                &logical_device,
-                surface,
-                &surface_loader,
-                window.inner_size(),
-                render_pass
-            )
-        })?;
-
         //command pool/buffer
-        let (command_pool, command_buffers) = setup_command_buffers(&logical_device, q_family_indices, deletion_queue)?;
-        
+        let command_pool = setup_command_pool(&logical_device, q_family_indices, deletion_queue)?;
              
         let (descriptor_set_layout,
-            descriptor_pool, 
-            descriptor_sets, 
-            uniform_buffers) = unsafe { create_descriptor_resources(&logical_device, instance, physical_device, deletion_queue) }?;
-        
-        // gpu cpu synchronization
-        let (image_available_semaphores, 
-            rendering_finished_semaphores,
-            frame_in_flight_fences,
-            images_in_flight_fences) = setup_sync_objects(&logical_device, swapchain.images.len(), deletion_queue)?;        
-        
+            descriptor_pool) = setup_descriptor_pool_and_layout(
+                                                                        &logical_device,
+                                                                        deletion_queue
+                                                                    ) ?;
+        //depth buffer
         let descriptor_set_layouts = vec![descriptor_set_layout];
         let (graphics_pipeline, pipeline_layout) = create_triangle_pipeline(&logical_device, render_pass, descriptor_set_layouts, deletion_queue)?;
         //return
@@ -146,13 +122,6 @@ impl VulkanContext {
             physical_device: physical_device,
             graphics_queue: graphics_queue,
             present_queue: present_queue,
-            swapchain: Some(swapchain),
-            image_available_semaphores: image_available_semaphores,
-            rendering_finished_semaphores: rendering_finished_semaphores,
-            frame_in_flight_fences: frame_in_flight_fences,
-            images_in_flight_fences: images_in_flight_fences,
-            current_frame: 0,
-            command_buffers,
             command_pool: command_pool,
             render_pass: render_pass,
             graphics_pipeline: graphics_pipeline,
@@ -160,50 +129,10 @@ impl VulkanContext {
             debug_utils: debug_utils,
             descriptor_pool: descriptor_pool,
             descriptor_set_layout : descriptor_set_layout,
-            descriptor_sets : descriptor_sets,
-            uniform_buffers: uniform_buffers
+            phys_memory_properties : physical_memory_properties
         };
 
         Ok((context, logical_device))
-    }
-
-    pub unsafe fn recreate_swapchain(&mut self, window: &Window, size: winit::dpi::PhysicalSize<u32>, instance: &Instance, logical_device: &ash::Device) -> Result<()> {
-        (unsafe { logical_device.device_wait_idle() })?;
-
-        for sem in self.rendering_finished_semaphores.drain(..) {
-            unsafe { logical_device.destroy_semaphore(sem, None) };
-        }
-
-        let swapchain_details = (unsafe {
-            swapchain::get_swapchain_details(self.physical_device, self.surface, &self.surface_loader)
-        })?;
-        self.swapchain = None; // Drop old swapchain and its resources
-        let swapchain = unsafe { swapchain::SafeSwapchain::new(
-            swapchain_details,
-            window,
-            instance,
-            self.physical_device,
-            logical_device,
-            self.surface,
-            &self.surface_loader,
-            size,
-            self.render_pass
-        )?};
-        let new_image_count = swapchain.images.len();
-        self.swapchain = Some(swapchain);
-
-        // Re-create them for the new image count
-        let semaphore_info = vk::SemaphoreCreateInfo::default();
-        for _ in 0..new_image_count {
-            let sem = unsafe { logical_device.create_semaphore(&semaphore_info, None)? };
-            self.rendering_finished_semaphores.push(sem);
-        }
-
-        // Reset image-to-fence mapping (it's safe to just clear and fill with null)
-        self.images_in_flight_fences.clear();
-        self.images_in_flight_fences.resize(new_image_count, vk::Fence::null());
-
-        Ok(())
     }
 }
 
@@ -238,7 +167,6 @@ pub fn create_triangle_pipeline(logical_device: &ash::Device, render_pass: vk::R
         .with_binding_descriptions(vec![bindings])
         .with_attribute_descriptions(attributes.to_vec());
     //rest is default
-
 
     let pipeline = pipeline_builder.build(logical_device, render_pass)?; 
 
@@ -360,7 +288,7 @@ unsafe fn check_physical_device(
     (unsafe { check_device_extension_support(instance, physical_device) })?;
 
     let details = unsafe {
-        swapchain::SwapchainSupportDetails::get(physical_device, surface, surface_loader)?
+        render_target::swapchain::SwapchainSupportDetails::get(physical_device, surface, surface_loader)?
     };
     if details.formats.is_empty() || details.present_modes.is_empty() {
         return Err(
@@ -419,67 +347,22 @@ unsafe fn pick_physical_device(
     Err(anyhow!("Failed to pick any suitable device!"))
 }
 
-fn setup_sync_objects(logical_device: &ash::Device, swapchain_image_count: usize, deletion_queue: &mut DeletionQueue) -> Result<(Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>, Vec<vk::Fence>)> {
-    let mut image_available_semaphores = Vec::new();
-    let mut rendering_finished_semaphores = Vec::new();
-    let mut frame_in_flight_fences = Vec::new();
-    let mut images_in_flight_fences = Vec::new();
 
-
-    let semaphore_info = vk::SemaphoreCreateInfo::default();
-    let signaled_fence_info = vk::FenceCreateInfo
-        ::default()
-        .flags(vk::FenceCreateFlags::SIGNALED); // by default starts as unsignaled. We use flag to init it in Signaled state
-
-
-    for _ in 0..swapchain_image_count {
-        images_in_flight_fences.push(vk::Fence::null());
-        rendering_finished_semaphores.push((unsafe { logical_device.create_semaphore(&semaphore_info, None) })?);
-    }
-
-    for _ in 0..MAX_FRAMES_IN_FLIGHT {
-        frame_in_flight_fences.push((unsafe { logical_device.create_fence(&signaled_fence_info, None) })?);
-        image_available_semaphores.push((unsafe { logical_device.create_semaphore(&semaphore_info, None) })?);
-    }
-        
-    let logical_device_clone = logical_device.clone();
-    let frame_in_flight_fences_copy = frame_in_flight_fences.clone();
-    let image_available_sems_copy = image_available_semaphores.clone();
-    deletion_queue.push(move || unsafe {
-        for fence in frame_in_flight_fences_copy {
-            logical_device_clone.destroy_fence(fence, None);
-        }
-        for semaphore in image_available_sems_copy {
-            logical_device_clone.destroy_semaphore(semaphore, None);
-        }
-    });
-
-    Ok((image_available_semaphores, rendering_finished_semaphores, frame_in_flight_fences, images_in_flight_fences))
-}
-
-
-
-fn setup_command_buffers(logical_device: &ash::Device, q_family_indices: QueueFamilyIndices, deletion_queue: &mut DeletionQueue) -> Result<(vk::CommandPool,Vec<vk::CommandBuffer>)> {
+fn setup_command_pool(logical_device: &ash::Device, q_family_indices: QueueFamilyIndices, deletion_queue: &mut DeletionQueue) -> Result<vk::CommandPool> {
      let pool_info = vk::CommandPoolCreateInfo
             ::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
             .queue_family_index(q_family_indices.graphics);
     let command_pool = (unsafe { logical_device.create_command_pool(&pool_info, None) })?;
 
-    let buffer_info = vk::CommandBufferAllocateInfo
-        ::default()
-        .command_pool(command_pool)
-        .level(vk::CommandBufferLevel::PRIMARY)
-        .command_buffer_count(MAX_FRAMES_IN_FLIGHT.try_into().unwrap());
-        
-    let command_buffers = (unsafe { logical_device.allocate_command_buffers(&buffer_info) })?;
-
     let logical_device_clone = logical_device.clone();
     deletion_queue.push(move || unsafe {
         logical_device_clone.destroy_command_pool(command_pool, None);
     });
-    Ok((command_pool, command_buffers))
+    Ok(command_pool)
 }
+
+
 
 //debug
 fn setup_debugging(entry: &ash::Entry, instance: &ash::Instance, deletion_queue: &mut DeletionQueue) -> Result<(ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)> {
@@ -544,6 +427,7 @@ unsafe fn setup_debug_messenger(
 }
 
 unsafe fn create_render_pass(format: vk::Format, logical_device: &ash::Device, deletion_queue: &mut DeletionQueue) -> Result<vk::RenderPass> {
+    //color attachment
     let color_attachment_description = vk::AttachmentDescription
         ::default()
         .format(format)
@@ -558,14 +442,33 @@ unsafe fn create_render_pass(format: vk::Format, logical_device: &ash::Device, d
         ::default()
         .attachment(0)
         .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+    //depth attachment
+    let depth_attachment_description = vk::AttachmentDescription
+        ::default()
+        .format(vk::Format::D32_SFLOAT) //match depth image
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .load_op(vk::AttachmentLoadOp::CLEAR) //what means far? i assume its clearing image memory when its loaded?
+        .store_op(vk::AttachmentStoreOp::DONT_CARE) // whats this then
+        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+        .initial_layout(vk::ImageLayout::UNDEFINED) //why not depth?
+        .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL); // whats stencil?? 
+    let depth_attachment_ref = vk::AttachmentReference
+        ::default()
+        .attachment(1)
+        .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+    //subpass
     let subpass_description = vk::SubpassDescription
         ::default()
         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-        .color_attachments(std::slice::from_ref(&color_attachment_ref));
-
+        .color_attachments(std::slice::from_ref(&color_attachment_ref))
+        .depth_stencil_attachment(&depth_attachment_ref);
+    let attachments = [color_attachment_description, depth_attachment_description];
+    //render_pass
     let render_pass_info = vk::RenderPassCreateInfo
         ::default()
-        .attachments(std::slice::from_ref(&color_attachment_description))
+        .attachments(&attachments)
         .subpasses(std::slice::from_ref(&subpass_description));
 
     let render_pass = (unsafe { logical_device.create_render_pass(&render_pass_info, None) })?;
@@ -593,13 +496,12 @@ pub unsafe fn load_shader_module(device: &ash::Device, path: &str) -> Result<vk:
 }
 
 //vertex buffer
-pub unsafe fn create_vertex_buffer(instance: &ash::Instance, device: &ash::Device, physical_device: vk::PhysicalDevice, vertices: &[Vertex], deletion_queue: &mut DeletionQueue) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+pub unsafe fn create_vertex_buffer(phys_mem_props: &vk::PhysicalDeviceMemoryProperties, device: &ash::Device, vertices: &[Vertex], deletion_queue: &mut DeletionQueue) -> Result<(vk::Buffer, vk::DeviceMemory)> {
     let buffer_size = (std::mem::size_of::<Vertex>() * vertices.len()) as vk::DeviceSize;
 
     let (vertex_buffer, vertex_buffer_memory) = buffer::create_buffer(
-        instance,
         device,
-        physical_device,
+        phys_mem_props,
         buffer_size,
         vk::BufferUsageFlags::VERTEX_BUFFER,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
@@ -619,13 +521,12 @@ pub unsafe fn create_vertex_buffer(instance: &ash::Instance, device: &ash::Devic
 }
 
 //indices buffer
-pub unsafe fn create_indices_buffer(instance: &ash::Instance, device: &ash::Device, physical_device: vk::PhysicalDevice, indices: &[u32], deletion_queue: &mut DeletionQueue) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+pub unsafe fn create_indices_buffer(phys_mem_props: &vk::PhysicalDeviceMemoryProperties, device: &ash::Device, indices: &[u32], deletion_queue: &mut DeletionQueue) -> Result<(vk::Buffer, vk::DeviceMemory)> {
     let buffer_size = (std::mem::size_of::<u32>() * indices.len()) as vk::DeviceSize;
 
     let (indice_buffer, indice_buffer_memory) = buffer::create_buffer(
-        instance,
         device,
-        physical_device,
+        phys_mem_props,
         buffer_size,
         vk::BufferUsageFlags::INDEX_BUFFER,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
@@ -644,49 +545,27 @@ pub unsafe fn create_indices_buffer(instance: &ash::Instance, device: &ash::Devi
     Ok((indice_buffer, indice_buffer_memory))
 }
 
-unsafe fn create_descriptor_resources(logical_device: &ash::Device, instance: &ash::Instance, physical_device: vk::PhysicalDevice, deletion_queue: &mut DeletionQueue)
--> Result<(DescriptorSetLayout, DescriptorPool, Vec<DescriptorSet>,Vec<(vk::Buffer, vk::DeviceMemory)>)>{
-    let descriptor_layout_builder = descriptor::DescriptorLayoutBuilder::new()
-        .add_binding(
-             0,
-             vk::DescriptorType::UNIFORM_BUFFER,
-             vk::ShaderStageFlags::VERTEX);
-    let descriptor_set_layout = descriptor_layout_builder.build(&logical_device)?;
-    let descriptor_pool = descriptor::create_descriptor_pool(&logical_device, MAX_FRAMES_IN_FLIGHT as u32)?;
-    let descriptor_sets = descriptor::allocate_descriptor_sets(&logical_device, descriptor_pool, descriptor_set_layout, MAX_FRAMES_IN_FLIGHT as u32)?;
-    
-    //bufers
-    let mut buffers = Vec::new();
-    let ubo_size = std::mem::size_of::<UniformBufferObject>() as vk::DeviceSize;
-    for i in 0..MAX_FRAMES_IN_FLIGHT{
-        let (buf, mem) = buffer::create_buffer(
-            instance,
-            logical_device, 
-            physical_device, 
-            ubo_size, 
-            vk::BufferUsageFlags::UNIFORM_BUFFER, 
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
-        buffers.push((buf, mem));
+fn setup_descriptor_pool_and_layout(
+    logical_device: &ash::Device, 
+    deletion_queue: &mut DeletionQueue
+) -> Result<(vk::DescriptorSetLayout, vk::DescriptorPool)> {
+    // 1. Layout (The Blueprint)
+    let descriptor_set_layout = descriptor::DescriptorLayoutBuilder::new()
+        .add_binding(0, vk::DescriptorType::UNIFORM_BUFFER, vk::ShaderStageFlags::VERTEX)
+        .build(logical_device)?;
 
-        descriptor::update_buffer_descriptor_set(
-            logical_device, 
-            descriptor_sets[i], 
-            buffers[i].0, 
-            vk::DescriptorType::UNIFORM_BUFFER,
-            0
-            );
-        let logical_device_clone = logical_device.clone();
-        deletion_queue.push(move || unsafe {
-            logical_device_clone.destroy_buffer(buf, None);
-            logical_device_clone.free_memory(mem, None);
-        });
-    }
-    let logical_device_clone = logical_device.clone();
-    deletion_queue.push(move || unsafe{
-        logical_device_clone.destroy_descriptor_pool(descriptor_pool, None);
-        logical_device_clone.destroy_descriptor_set_layout(descriptor_set_layout, None);
-    }); 
+    // 2. Pool (The Factory)
+    let descriptor_pool = descriptor::create_descriptor_pool(
+        logical_device, 
+        MAX_FRAMES_IN_FLIGHT as u32
+    )?;
 
+    // Push to DeletionQueue because these are permanent
+    let ld_clone = logical_device.clone();
+    deletion_queue.push(move || unsafe {
+        ld_clone.destroy_descriptor_pool(descriptor_pool, None);
+        ld_clone.destroy_descriptor_set_layout(descriptor_set_layout, None);
+    });
 
-    return Ok((descriptor_set_layout, descriptor_pool, descriptor_sets, buffers));
+    Ok((descriptor_set_layout, descriptor_pool))
 }

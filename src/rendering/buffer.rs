@@ -19,9 +19,8 @@ use super::memory::find_memory_type;
 /// * `usage` - How the buffer will be used (e.g., `vk::BufferUsageFlags::VERTEX_BUFFER`)
 /// * `properties` - Memory flags (e.g., `vk::MemoryPropertyFlags::HOST_VISIBLE` for CPU access).
 pub fn create_buffer(
-    instance: &ash::Instance,
     device: &ash::Device,
-    physical_device: vk::PhysicalDevice,
+    physical_device_memory_props: &vk::PhysicalDeviceMemoryProperties,
     size: vk::DeviceSize,
     usage: vk::BufferUsageFlags,
     properties: vk::MemoryPropertyFlags,
@@ -36,8 +35,7 @@ pub fn create_buffer(
 
     let mem_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
     let mem_type_index = find_memory_type(
-        instance,
-        physical_device,
+        physical_device_memory_props,
         mem_requirements.memory_type_bits,
         properties,
     )?;

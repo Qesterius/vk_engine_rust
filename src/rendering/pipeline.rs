@@ -1,21 +1,24 @@
 use std::ffi::CStr;
 
-use ash::vk;
+use ash::vk::{self, CompareOp};
 use anyhow::{Result, anyhow};
 
 /// A builder pattern for creating Vulkan graphics pipelines.
 pub struct PipelineBuilder{
-    pub shader_stages_ingr: Vec<(vk::ShaderModule, vk::ShaderStageFlags)>,    
-    pub binding_descriptions: Vec<vk::VertexInputBindingDescription>,
-    pub attribute_descriptions: Vec<vk::VertexInputAttributeDescription>,
+    shader_stages_ingr: Vec<(vk::ShaderModule, vk::ShaderStageFlags)>,    
+    binding_descriptions: Vec<vk::VertexInputBindingDescription>,
+    attribute_descriptions: Vec<vk::VertexInputAttributeDescription>,
 
-    pub topology: vk::PrimitiveTopology,
-    pub polygon_mode: vk::PolygonMode,
-    pub cull_mode: vk::CullModeFlags,
-    pub front_face: vk::FrontFace,
-    pub samples: vk::SampleCountFlags,
-    pub color_blend_attachment: vk::PipelineColorBlendAttachmentState,
-    pub pipeline_layout: vk::PipelineLayout,
+    topology: vk::PrimitiveTopology,
+    polygon_mode: vk::PolygonMode,
+    cull_mode: vk::CullModeFlags,
+    front_face: vk::FrontFace,
+    samples: vk::SampleCountFlags,
+    color_blend_attachment: vk::PipelineColorBlendAttachmentState,
+    pipeline_layout: vk::PipelineLayout,
+    depth_test_enabled : bool, 
+    depth_write_enabled : bool, 
+    depth_compare_op : CompareOp,
 }
 impl PipelineBuilder{
     /// Creates a new PipelineBuilder with the specified pipeline layout.
@@ -36,9 +39,34 @@ impl PipelineBuilder{
                     .color_write_mask(vk::ColorComponentFlags::RGBA)
                     .blend_enable(false),
                 pipeline_layout: layout,
+                depth_test_enabled: true,
+                depth_write_enabled: true,
+                depth_compare_op: vk::CompareOp::LESS
             }
         }
 
+    /// Configures the depth testing and writing behavior for the pipeline.
+    /// 
+    /// # Arguments
+    /// * `test_enabled` - If true, the GPU will compare the depth of each new pixel 
+    ///   against the value already in the depth buffer. This is what allows 
+    ///   closer objects to "occlude" (hide) objects further away.
+    /// 
+    /// * `write_enabled` - If true, the depth value of the new pixel will be 
+    ///   saved to the depth buffer if it passes the comparison test. 
+    ///   (Note: Usually false for transparent objects to prevent them from 
+    ///   "blocking" objects behind them).
+    /// 
+    /// * `compare_op` - The mathematical rule used for the test. 
+    ///   - `LESS`: A pixel is drawn only if it is closer to the camera than the existing pixel.
+    ///   - `LESS_OR_EQUAL`: Common for skyboxes or overlapping geometry.
+    ///   - `GREATER`: Used if you are using an "Inverted Z" buffer for better precision.
+    pub fn with_depth(mut self, test_enabled: bool, write_enabled: bool, compare_op: vk::CompareOp) -> Self {
+        self.depth_test_enabled = test_enabled;
+        self.depth_write_enabled = write_enabled;
+        self.depth_compare_op = compare_op;
+        self
+    }
 
     /// Adds a shader stage to the pipeline.
     /// 
@@ -166,6 +194,14 @@ impl PipelineBuilder{
             .logic_op_enable(false)
             .attachments(std::slice::from_ref(&self.color_blend_attachment));
         
+        let depth_stencil_info = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(self.depth_test_enabled) // Assuming you stored bools in the struct
+            .depth_write_enable(self.depth_write_enabled)
+            .depth_compare_op(self.depth_compare_op)
+            .depth_bounds_test_enable(false)
+            .stencil_test_enable(false);
+
+
         let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stage_infos)
             .vertex_input_state(&vertex_input_info)
@@ -176,6 +212,7 @@ impl PipelineBuilder{
             .multisample_state(&multisampling)
             .color_blend_state(&color_blending)
             .dynamic_state(&dynamic_state_info)
+            .depth_stencil_state(&depth_stencil_info)
             .layout(self.pipeline_layout)
             .render_pass(render_pass)
             .subpass(0);
