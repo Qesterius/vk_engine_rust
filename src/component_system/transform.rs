@@ -22,4 +22,30 @@ impl Transform {
         
         pos * rot * scale // Scale first, then Rotate, then Translate
     }
+    
+    /// Moves the transform by a relative offset
+    pub fn translate(&mut self, offset: cgmath::Vector3<f32>) -> &mut Self {
+        self.position += offset;
+        self
+    }
+
+    /// Sets the absolute position
+    pub fn set_position(&mut self, position: [f32; 3]) -> &mut Self {
+        self.position = position.into();
+        self
+    }
+
+    /// Rotates the object around its local Y axis (Yaw)
+    pub fn rotate_y(&mut self, degrees: f32) -> &mut Self {
+        use cgmath::Rotation3;
+        let rotation = cgmath::Quaternion::from_angle_y(cgmath::Deg(degrees));
+        self.rotation = self.rotation * rotation;
+        self
+    }
+
+    /// Scales the object uniformly
+    pub fn set_scale(&mut self, s: f32) -> &mut Self {
+        self.scale = cgmath::Vector3::new(s, s, s);
+        self
+    }
 }

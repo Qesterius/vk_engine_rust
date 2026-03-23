@@ -1,7 +1,7 @@
 use crate::config::{MAX_FRAMES_IN_FLIGHT, VALIDATION_ENABLED};
 use crate::rendering::memory::find_memory_type;
 use crate::rendering::render_target;
-use crate::rendering::vertex::UniformBufferObject;
+use crate::rendering::vertex::{MeshPushConstants, UniformBufferObject};
 use super::buffer;
 use super::memory;
 use super::vertex::Vertex;
@@ -97,7 +97,7 @@ impl VulkanContext {
         //render pass
         let swapchain_details = (unsafe {
             render_target::swapchain::get_swapchain_details(physical_device, surface, &surface_loader)
-        })?;
+        })?; 
         let surface_format = render_target::swapchain::get_swapchain_surface_format(&swapchain_details.formats);
 
         let render_pass = (unsafe {
@@ -152,8 +152,16 @@ impl VulkanContext {
 /// # Returns
 /// A tuple containing the created graphics pipeline and its layout
 pub fn create_triangle_pipeline(logical_device: &ash::Device, render_pass: vk::RenderPass, descriptor_set_layouts : Vec<DescriptorSetLayout>, deletion_queue: &mut DeletionQueue) -> Result<(vk::Pipeline, vk::PipelineLayout)> {
+    let push_constant_ranges = vec![
+            vk::PushConstantRange::default()
+                .size(std::mem::size_of::<MeshPushConstants>() as u32)
+                .stage_flags(vk::ShaderStageFlags::VERTEX)
+                .offset(0)
+        ];
+
     let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
-        .set_layouts(&descriptor_set_layouts);
+        .set_layouts(&descriptor_set_layouts)
+        .push_constant_ranges(&push_constant_ranges);
     let pipeline_layout = (unsafe { logical_device.create_pipeline_layout(&pipeline_layout_info, None) })?;
 
     let vert_module = (unsafe { load_shader_module(&logical_device, "src/rendering/shaders/vert.spv") })?;

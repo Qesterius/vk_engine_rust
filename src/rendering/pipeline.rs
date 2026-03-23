@@ -8,7 +8,6 @@ pub struct PipelineBuilder{
     shader_stages_ingr: Vec<(vk::ShaderModule, vk::ShaderStageFlags)>,    
     binding_descriptions: Vec<vk::VertexInputBindingDescription>,
     attribute_descriptions: Vec<vk::VertexInputAttributeDescription>,
-
     topology: vk::PrimitiveTopology,
     polygon_mode: vk::PolygonMode,
     cull_mode: vk::CullModeFlags,
@@ -41,7 +40,7 @@ impl PipelineBuilder{
                 pipeline_layout: layout,
                 depth_test_enabled: true,
                 depth_write_enabled: true,
-                depth_compare_op: vk::CompareOp::LESS
+                depth_compare_op: vk::CompareOp::LESS,
             }
         }
 

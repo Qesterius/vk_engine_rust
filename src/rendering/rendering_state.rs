@@ -14,7 +14,7 @@ use crate::component_system::simple_component_manager::ComponentManager;
 use crate::config::{APPLICATION_NAME, ENGINE_NAME, ENGINE_VERSION, MAX_FRAMES_IN_FLIGHT, VALIDATION_ENABLED};
 use crate::rendering::{buffer, descriptor, memory, render_target};
 use crate::rendering::render_target::render_target::RenderTarget;
-use crate::rendering::vertex::UniformBufferObject;
+use crate::rendering::vertex::{MeshPushConstants, UniformBufferObject};
 use crate::utils;
 
 
@@ -153,12 +153,12 @@ impl RenderingState
         let extent = sc.extent;
         let aspect = extent.width as f32 / extent.height as f32;
         let view_matrix = cgmath::Matrix4::look_at_rh(
-            cgmath::Point3::new(2.0, 2.0, 2.0),
-            cgmath::Point3::new(0.0, 0.0, 0.0),
-            cgmath::Vector3::unit_z(),
+            cgmath::Point3::new(0.0, 2.0, 10.0), // Camera position
+            cgmath::Point3::new(0.0, 0.0, 0.0),  // Looking at the center
+            cgmath::Vector3::new(0.0, 1.0, 0.0), // Up direction
         );
         
-        let mut proj_matrix = cgmath::perspective(cgmath::Deg(45.0), aspect, 0.1, 10.0);
+        let mut proj_matrix = cgmath::perspective(cgmath::Deg(90.0), aspect, 0.1, 1000.0);
         proj_matrix[1][1] *= -1.0; // Vulkan Y-flip
 
         // CPU wait for GPU to finish rendering the previous in_flight frame
@@ -250,6 +250,12 @@ impl RenderingState
             device.cmd_set_scissor(curr_cmd_buf, 0, &[scissor]);
             
             //Global UBO
+            let ubo_data = UniformBufferObject{
+                    view:view_matrix,
+                    proj:proj_matrix
+                };
+            memory::map_and_copy(&self.logical_device, current_ubo_memory, &[ubo_data])?;
+            
             device.cmd_bind_descriptor_sets(
                 curr_cmd_buf, 
                 vk::PipelineBindPoint::GRAPHICS, 
@@ -259,19 +265,21 @@ impl RenderingState
                 &[]
             );
 
+
             //draw components loop
             for (i, mesh_opt) in component_manager.meshes.iter().enumerate(){
                 if let Some(mesh) = mesh_opt{
                     if let Some(transform) = component_manager.transforms.get(i).and_then(|t| t.as_ref()){
 
                         let model_matrix = transform.to_matrix();
-                        let ubo_data = UniformBufferObject{
-                            model:model_matrix,
-                            view:view_matrix,
-                            proj:proj_matrix
-                        };
-                        //each object overwrites one ubo buffer. it should change
-                        memory::map_and_copy(&self.logical_device, current_ubo_memory, &[ubo_data])?;
+                        let position_push_const = MeshPushConstants::new(model_matrix);
+                        self.logical_device.cmd_push_constants(
+                            curr_cmd_buf, 
+                            ctx.pipeline_layout, 
+                            vk::ShaderStageFlags::VERTEX, 
+                            0, 
+                            utils::any_as_u8_slice(&position_push_const)
+                        );
                         mesh.bind(device, curr_cmd_buf);
                         mesh.draw(device, curr_cmd_buf);
                     }
@@ -432,6 +440,14 @@ fn setup_command_buffers(command_pool : vk::CommandPool, logical_device: &ash::D
     Ok(command_buffers)
 }
 
+/// Allocates a "Descriptor Frame" for each frame in flight.
+/// 
+/// A "Descriptor Frame" consists of a Descriptor Set and its associated Uniform Buffer.
+/// In our engine, this UBO is used to store Global Data that stays constant for the 
+/// entire duration of a single frame—specifically the Camera's View and Projection matrices.
+///
+/// We create `MAX_FRAMES_IN_FLIGHT` copies so the CPU can update the camera for Frame B
+/// while the GPU is still reading the camera data for Frame A.
 unsafe fn allocate_descriptor_frames(
     logical_device: &ash::Device,
     phys_mem_props: &vk::PhysicalDeviceMemoryProperties,

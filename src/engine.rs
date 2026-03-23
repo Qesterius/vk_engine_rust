@@ -16,16 +16,21 @@ impl Engine{
         let mut rendering_state = unsafe { RenderingState::new(window)? };
         let mut component_manager = ComponentManager::new()?;
         
-        let simple_cube_mesh = Mesh::new_cube( //TODO: create asset manager and move this there
-            &rendering_state.vulkan_context.phys_memory_properties, 
-            &rendering_state.logical_device,
-            &mut rendering_state.deletion_queue 
-        )?;
 
-        let simple_cube_entity = component_manager.create_entity();
-        component_manager.add_mesh(simple_cube_entity, simple_cube_mesh);
-        component_manager.add_transform(simple_cube_entity, Transform::new([0.0,0.0,0.0]));
-        
+        for i in 0..10{
+            let simple_cube_mesh = Mesh::new_cube( //TODO: create asset manager and move this there
+                &rendering_state.vulkan_context.phys_memory_properties, 
+                &rendering_state.logical_device,
+                &mut rendering_state.deletion_queue 
+            )?;
+
+            let simple_cube_entity = component_manager.create_entity();
+            component_manager.add_mesh(simple_cube_entity, simple_cube_mesh);
+            
+            let mut transform = Transform::new([0.0, 0.0, 0.0]);
+            transform.translate(Vector3 { x: i as f32, y: (i as f32) % 2.0, z: (i as f32) % 5.0 });
+            component_manager.add_transform(simple_cube_entity, transform);
+        }
         Ok(Self{
                  rendering_state: rendering_state,
                  component_manager: component_manager

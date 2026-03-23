@@ -1,5 +1,8 @@
 use ash::vk;
 use cgmath;
+use cgmath::Matrix4;
+
+//TODO: rethink this filename/composition of structs in here
 
 /// A vertex structure containing position and color data.
 /// 
@@ -63,7 +66,25 @@ impl Vertex {
 /// 3D object should be transformed in the scene. The uniform buffer is consistent
 /// across all vertices in a draw call but can be updated between draw calls.
 pub struct UniformBufferObject {
-    pub model: cgmath::Matrix4<f32>,
     pub view: cgmath::Matrix4<f32>,
     pub proj: cgmath::Matrix4<f32>,
+}
+
+/// A high-speed data block sent directly to the GPU's command stream.
+///
+/// In Vulkan, Push Constants are a small, hardware-optimized memory bank (usually 128 bytes) 
+/// that lives on the GPU die. Unlike Uniform Buffers (UBOs), they do not require 
+/// descriptor sets or memory mapping. 
+///
+/// We use this specifically for per-object data (like the Model Matrix) because it 
+/// allows us to "push" a unique position/rotation for every draw call without 
+/// the CPU and GPU fighting over the same piece of UBO memory.
+#[repr(C)]
+pub struct MeshPushConstants {
+    pub model: Matrix4<f32>,
+}
+impl MeshPushConstants {
+    pub fn new(model: cgmath::Matrix4<f32>) -> Self {
+        Self { model }
+    }
 }
