@@ -8,3 +8,4 @@ pub mod memory;
 pub mod buffer;
 pub mod descriptor;
 pub mod components;
+pub mod vulkan_device;
