@@ -1,7 +1,6 @@
 use ash::vk;
 use anyhow::{Result, anyhow};
 
-use crate::rendering::descriptor;
 
 //  Utility struct to keep memory behind Binding Info pointers in current scope
 /// We store these instead of `vk::DescriptorSetLayoutBinding` because the 

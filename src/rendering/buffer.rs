@@ -1,7 +1,8 @@
 use ash::vk;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 
-use super::memory::find_memory_type;
+use super::cleanup::DeletionQueue;
+use super::memory::{find_memory_type, map_and_copy};
 
 
 /// Creates a Vulkan Buffer and allocates its backing Device Memory.
@@ -50,3 +51,48 @@ pub fn create_buffer(
     Ok((buffer, buffer_memory))
 }
 
+pub unsafe fn create_vertex_buffer<T: Copy>(
+    device: &ash::Device,
+    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    data: &[T],
+    deletion_queue: &mut DeletionQueue,
+) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+    let size = (std::mem::size_of::<T>() * data.len()) as vk::DeviceSize;
+    let (buf, mem) = create_buffer(
+        device,
+        mem_props,
+        size,
+        vk::BufferUsageFlags::VERTEX_BUFFER,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+    )?;
+    unsafe { map_and_copy(device, mem, data) }?;
+    let d = device.clone();
+    deletion_queue.push(move || unsafe {
+        d.destroy_buffer(buf, None);
+        d.free_memory(mem, None);
+    });
+    Ok((buf, mem))
+}
+
+pub unsafe fn create_index_buffer(
+    device: &ash::Device,
+    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    indices: &[u32],
+    deletion_queue: &mut DeletionQueue,
+) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+    let size = (std::mem::size_of::<u32>() * indices.len()) as vk::DeviceSize;
+    let (buf, mem) = create_buffer(
+        device,
+        mem_props,
+        size,
+        vk::BufferUsageFlags::INDEX_BUFFER,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+    )?;
+    unsafe { map_and_copy(device, mem, indices) }?;
+    let d = device.clone();
+    deletion_queue.push(move || unsafe {
+        d.destroy_buffer(buf, None);
+        d.free_memory(mem, None);
+    });
+    Ok((buf, mem))
+}
