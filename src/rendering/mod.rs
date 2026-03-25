@@ -1,5 +1,3 @@
-pub mod vulkan_context;
-pub mod rendering_state;
 pub mod pipeline;
 pub mod cleanup;
 pub mod vertex;
@@ -8,6 +6,6 @@ pub mod memory;
 pub mod buffer;
 pub mod descriptor;
 pub mod components;
-
 pub mod rendering_instance;
 pub mod rendering_manager;
+pub mod shaders;

@@ -19,8 +19,10 @@ pub fn vk_to_cstr(raw_char_array: &[i8]) -> &CStr {
 /// The type `T` must be `#[repr(C)]` to ensure the byte layout matches 
 /// what the GPU (SPIR-V) expects.
 pub unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
-    std::slice::from_raw_parts(
-        (p as *const T) as *const u8,
-        std::mem::size_of::<T>(),
-    )
+    unsafe {
+        std::slice::from_raw_parts(
+            (p as *const T) as *const u8,
+            std::mem::size_of::<T>(),
+        )
+    }
 }
