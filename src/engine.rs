@@ -1,18 +1,42 @@
-use crate::{component_system::{simple_component_manager::{self, ComponentManager}, transform::Transform}, rendering::{components::mesh::Mesh, rendering_state::{self, RenderingState}}};
+use std::sync::Arc;
 use anyhow::{Ok, Result};
 use log::info;
 use winit::window::Window;
 use cgmath::{Quaternion, Rotation3, Vector3};
 
+use crate::{
+    component_system::simple_component_manager::ComponentManager, device::device::Device, rendering::{
+        rendering_canvas, rendering_instance::{self, RenderingInstance}, rendering_manager::RenderingManger
+    }
+};
 
 
 pub struct Engine {
-    pub rendering_state: RenderingState,
+    pub instance: Arc<RenderingInstance>,
+    pub device: Arc<Device>,
+    pub renderer: RenderingManger,
+    //assetmanager
+    //uimanager
     pub component_manager: ComponentManager
 }
 
 impl Engine{
     pub fn new(window:Window) -> Result<Self>{
+
+        let rendering_instance = RenderingInstance::new(&window)?;
+
+        let (surface, surface_loader) = rendering_instance.create_surface(&window)?;
+
+        let rendering_device = Device::new(
+            &rendering_instance,
+            surface,
+            &surface_loader
+        );
+
+        let canvas = rendering_canvas::canvas::Canvas::new(
+            rendering_device
+        )
+        
         let mut rendering_state = unsafe { RenderingState::new(window)? };
         let mut component_manager = ComponentManager::new()?;
         

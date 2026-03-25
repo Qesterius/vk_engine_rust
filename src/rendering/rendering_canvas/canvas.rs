@@ -1,27 +1,29 @@
-use ash::{khr::{surface, swapchain}, vk::{self, PhysicalDevice}};
-use anyhow::{Result, Ok};
-use crate::rendering::render_target::{depth_buffer, swapchain::{SwapchainState, SwapchainSupportDetails}};
+use std::sync::Arc;
 
-use super::depth_buffer::DepthBuffer;
+use ash::vk;
+use anyhow::{Result, Ok};
+use crate::device::device::Device;
+
+use super::{depth_buffer::DepthBuffer, swapchain::{SwapchainState, SwapchainSupportDetails}};
 
 #[derive(Clone)]
-pub struct RenderTarget{
+pub struct Canvas{
+    device: Arc<Device>,
+    pub surface: vk::SurfaceKHR,
+    pub surface_loader: ash::khr::surface::Instance,
     pub swapchain : SwapchainState,
     pub depth_buffer: DepthBuffer,
     pub framebuffers: Vec<vk::Framebuffer>, // Links swapchain views + depth view
-    pub device : ash::Device
+    pub render_pass: vk::RenderPass
 }
 
-impl RenderTarget{
+impl Canvas{
     pub unsafe fn new(
-        logical_device: &ash::Device,
-        instance: &ash::Instance,
-        physical_device: vk::PhysicalDevice,
+        device: Arc<Device>,
         surface: vk::SurfaceKHR,
         surface_loader: &ash::khr::surface::Instance,
         render_pass: vk::RenderPass,
         window_size: winit::dpi::PhysicalSize<u32>,
-        phys_dev_mem_prop : &vk::PhysicalDeviceMemoryProperties
      ) -> Result<Self>{
         //swapchain
         let swapchain_support_details = unsafe { SwapchainSupportDetails::get(physical_device, surface, surface_loader) }?;
@@ -47,7 +49,7 @@ impl RenderTarget{
     }
     pub unsafe fn handle_resize(&mut self) -> Result<()>{Ok(())}
 }
-impl Drop for RenderTarget{
+impl Drop for Canvas{
     fn drop(&mut self){
         unsafe{
             //framebuffers

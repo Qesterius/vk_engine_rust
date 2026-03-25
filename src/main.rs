@@ -3,6 +3,8 @@ mod config;
 mod rendering;
 mod component_system;
 mod engine;
+mod device;
+
 use crate::engine::Engine;
 use crate::config::{APPLICATION_TITLE};
 use log::{error, info, warn};

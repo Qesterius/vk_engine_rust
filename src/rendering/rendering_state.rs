@@ -11,19 +11,14 @@ use raw_window_handle::{ HasDisplayHandle, HasWindowHandle };
 use super::vulkan_context::VulkanContext;
 use super::cleanup::DeletionQueue;
 use crate::component_system::simple_component_manager::ComponentManager;
-use crate::config::{APPLICATION_NAME, ENGINE_NAME, ENGINE_VERSION, MAX_FRAMES_IN_FLIGHT, VALIDATION_ENABLED};
 use crate::rendering::{buffer, descriptor, memory, render_target};
-use crate::rendering::render_target::render_target::RenderTarget;
+use crate::rendering::render_target::render_target::Canvas;
 use crate::rendering::vertex::{MeshPushConstants, UniformBufferObject};
 use crate::utils;
 
 
 use anyhow::anyhow;
 
-// Use the "name" method on the extension's functional struct
-const PORTABILITY_ENUMERATION_EXTENSION_NAME: &std::ffi::CStr = ash::khr::portability_enumeration::NAME;
-const GET_PHYSICAL_DEVICE_PROPERTIES2_EXTENSION_NAME: &std::ffi::CStr = ash::khr::get_physical_device_properties2::NAME;
-const VALIDATION_LAYER: &std::ffi::CStr = c"VK_LAYER_KHRONOS_validation";
 
 
 
@@ -36,7 +31,7 @@ pub struct RenderingState
     pub logical_device : ash::Device,
     pub deletion_queue : DeletionQueue,
     start_time : std::time::Instant,
-    pub render_target : RenderTarget,
+    pub render_target : Canvas,
     pub(crate) image_available_semaphores: Vec<vk::Semaphore>,
     pub(crate) rendering_finished_semaphores: Vec<vk::Semaphore>,
     pub(crate) frame_in_flight_fences: Vec<vk::Fence>,
@@ -51,8 +46,6 @@ impl RenderingState
 {
     pub unsafe fn new(window: Window) -> Result<Self>{
 
-        let entry = unsafe {ash::Entry::load()?};
-        let instance = create_instance(&window, &entry)?;
         let mut deletion_queue = DeletionQueue::new();
 
         let (vulkan_context, logical_device) = unsafe { VulkanContext::init(
@@ -62,7 +55,7 @@ impl RenderingState
             &mut deletion_queue
         ) }?;
 
-        let render_target = unsafe { RenderTarget::new(
+        let render_target = unsafe { Canvas::new(
             &logical_device,
             &instance,
             vulkan_context.physical_device, 
@@ -110,7 +103,7 @@ impl RenderingState
         
         // This 'take' removes the old target, triggering its Drop (cleanup)
         // then replaces it with a brand new one.
-        self.render_target = unsafe { RenderTarget::new(
+        self.render_target = unsafe { Canvas::new(
             &self.logical_device,
             &self.instance,
             self.vulkan_context.physical_device,
@@ -352,54 +345,6 @@ impl Drop for RenderingState{
     }
 }
 
-fn create_instance(window: &Window, entry:&Entry) -> Result<Instance>{
-
-    let mut extensions = enumerate_required_extensions(
-        window.display_handle()?.as_raw())?.to_vec();
-
-    //macos compability
-    let mut flags = ash::vk::InstanceCreateFlags::empty();
-    if cfg!(target_os = "macos"){
-        extensions.push(PORTABILITY_ENUMERATION_EXTENSION_NAME.as_ptr());
-        extensions.push(GET_PHYSICAL_DEVICE_PROPERTIES2_EXTENSION_NAME.as_ptr());
-        flags |= ash::vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR;
-    }
-    
-    let available_layers =  unsafe {
-        entry.enumerate_instance_layer_properties()?
-            .iter()
-            .map(|l| l.layer_name )
-            .collect::<HashSet<_>>()
-    };
-
-    if VALIDATION_ENABLED {
-        if !available_layers.iter().any(|l| utils::vk_to_cstr(l) == VALIDATION_LAYER) {
-            return Err(anyhow!("Validation layer requested but not supported."));
-        }
-        extensions.push(ash::ext::debug_utils::NAME.as_ptr());
-        //TODO: https://kylemayes.github.io/vulkanalia/setup/validation_layers.html#debugging-instance-creation-and-destruction
-    }
-
-    let layers = if VALIDATION_ENABLED{
-        vec![VALIDATION_LAYER.as_ptr()]
-    } else {
-        Vec::new()
-    };
-
-    let app_info = ash::vk::ApplicationInfo::default()
-        .api_version(ash::vk::API_VERSION_1_3)
-        .application_name(APPLICATION_NAME)
-        .engine_name(ENGINE_NAME)
-        .engine_version(ENGINE_VERSION);
-
-    let create_info= ash::vk::InstanceCreateInfo::default()
-        .application_info(&app_info)
-        .enabled_extension_names(&extensions)
-        .flags(flags)
-        .enabled_layer_names(&layers);
-
-    return Ok(unsafe { entry.create_instance(&create_info, None)}?);
-}
 
 
 fn setup_sync_objects(logical_device: &ash::Device, swapchain_image_count: usize) -> Result<(Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>, Vec<vk::Fence>)> {

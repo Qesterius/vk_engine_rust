@@ -11,7 +11,7 @@ use crate::utils;
 use core::fmt;
 use super::pipeline::PipelineBuilder;
 use super::descriptor;
-use super::render_target::render_target::RenderTarget;
+use super::render_target::render_target::Canvas;
 
 use anyhow::anyhow;
 use anyhow::{ Ok, Result };
@@ -19,22 +19,20 @@ use ash::vk::{DescriptorPool, DescriptorSet, DescriptorSetLayout};
 use ash::vk::{ImageView, LogicOp};
 use ash::{ Instance, khr::surface, vk::{ self, PhysicalDevice } };
 use cgmath::num_traits::ToPrimitive;
-use log::{ error, info, warn };
 use raw_window_handle::{ HasDisplayHandle, HasWindowHandle };
 use std::ffi::{ CStr, c_void };
 use winit::window::Window;
 
 //Required Device extensions
-const DEVICE_EXTENSIONS: &[&std::ffi::CStr] = &[ash::khr::swapchain::NAME];
 
 #[derive(Clone)]
 pub(crate) struct VulkanContext {
     pub(crate) surface: vk::SurfaceKHR,
-    pub(crate) debug_utils : Option<(ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
+//    pub(crate) debug_utils : Option<(ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
     pub(crate) surface_loader: ash::khr::surface::Instance,
     pub(crate) physical_device: vk::PhysicalDevice,
-    pub(crate) graphics_queue: vk::Queue,
-    pub(crate) present_queue: vk::Queue,
+//    pub(crate) graphics_queue: vk::Queue,
+//    pub(crate) present_queue: vk::Queue,
     pub(crate) descriptor_set_layout: vk::DescriptorSetLayout,
     pub(crate) command_pool: vk::CommandPool,
     pub(crate) render_pass: vk::RenderPass,
@@ -62,38 +60,10 @@ impl VulkanContext {
         deletion_queue: &mut DeletionQueue
     ) -> Result<(Self, ash::Device)> {
 
-        //surface
-        let surface_loader = surface::Instance::new(&entry, &instance);
-        let surface = (unsafe {
-            ash_window::create_surface(
-                &entry,
-                &instance,
-                window.display_handle()?.as_raw(),
-                window.window_handle()?.as_raw(),
-                None
-            )
-        })?;
+
 
         //devices
-        let (physical_device, q_family_indices) = (unsafe {
-            pick_physical_device(&instance, surface, &surface_loader)
-        })?;
-        let (logical_device, graphics_queue, present_queue) = create_logical_device(
-            &instance,
-            physical_device,
-            &q_family_indices
-        )?; //logical device is cleaned from main.rs
-
-
-        //debug
-        let mut debug_utils = Some((ash::ext::debug_utils::Instance::new(entry, instance), vk::DebugUtilsMessengerEXT::null()));
-        if VALIDATION_ENABLED {
-           debug_utils = unsafe { setup_debugging(entry, instance, deletion_queue).ok() };
-        }
         
-        //mem
-        let physical_memory_properties =  unsafe { instance.get_physical_device_memory_properties(physical_device) };
-
         //render pass
         let swapchain_details = (unsafe {
             render_target::swapchain::get_swapchain_details(physical_device, surface, &surface_loader)
@@ -104,9 +74,7 @@ impl VulkanContext {
             create_render_pass(surface_format.format, &logical_device, deletion_queue)
         })?;
         
-        //command pool/buffer
-        let command_pool = setup_command_pool(&logical_device, q_family_indices, deletion_queue)?;
-             
+                 
         let (descriptor_set_layout,
             descriptor_pool) = setup_descriptor_pool_and_layout(
                                                                         &logical_device,
@@ -190,249 +158,8 @@ pub fn create_triangle_pipeline(logical_device: &ash::Device, render_pass: vk::R
 }
 
 
-//logical device
-fn create_logical_device(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
-    indices: &QueueFamilyIndices
-) -> Result<(ash::Device, vk::Queue, vk::Queue)> {
-    let mut unique_indices = std::collections::HashSet::new();
-    unique_indices.insert(indices.graphics);
-    unique_indices.insert(indices.present);
-
-    let queue_priorities = [1.0_f32]; //https://docs.vulkan.org/spec/latest/chapters/devsandqueues.html#devsandqueues-priority 0-1. this is just smart 1
-    let queue_create_infos: Vec<vk::DeviceQueueCreateInfo> = unique_indices
-        .iter()
-        .map(|&i| {
-            vk::DeviceQueueCreateInfo
-                ::default()
-                .queue_family_index(i)
-                .queue_priorities(&queue_priorities)
-        })
-        .collect();
-
-    let mut extensions_names_ptr: Vec<*const std::ffi::c_char> = DEVICE_EXTENSIONS.iter()
-        .map(|ext| ext.as_ptr())
-        .collect();
-
-    let available_extensions = (unsafe {
-        instance.enumerate_device_extension_properties(physical_device)
-    })?;
-    let portability_supported = available_extensions.iter().any(|ext| {
-        let name = vk_to_cstr(&ext.extension_name);
-        name == vk::KHR_PORTABILITY_SUBSET_NAME
-    });
-
-    if portability_supported {
-        info!("Adding Portability Subset extension.");
-        extensions_names_ptr.push(vk::KHR_PORTABILITY_SUBSET_NAME.as_ptr());
-    }
-
-    let features = vk::PhysicalDeviceFeatures::default();
-    let info = vk::DeviceCreateInfo
-        ::default()
-        .queue_create_infos(&queue_create_infos)
-        .enabled_features(&features)
-        .enabled_extension_names(&extensions_names_ptr);
-
-    let device = (unsafe { instance.create_device(physical_device, &info, None) })?;
-
-    let graphics_queue = unsafe { device.get_device_queue(indices.graphics, 0) };
-    let present_queue = unsafe { device.get_device_queue(indices.present, 0) };
-
-    Ok((device, graphics_queue, present_queue))
-}
-
-pub(crate) struct QueueFamilyIndices {
-    pub graphics: u32,
-    pub present: u32,
-}
-
-impl QueueFamilyIndices {
-    pub unsafe fn get(
-        instance: &Instance,
-        physical_device: vk::PhysicalDevice,
-        surface: vk::SurfaceKHR,
-        surface_loader: &ash::khr::surface::Instance
-    ) -> Result<Self> {
-        let properties = unsafe {
-            instance.get_physical_device_queue_family_properties(physical_device)
-        };
-
-        let mut graphics = None;
-        let mut present = None;
-
-        for (index, info) in properties.iter().enumerate() {
-            let i = index as u32;
-            if info.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
-                graphics = Some(i);
-            }
-            if unsafe {
-                    surface_loader.get_physical_device_surface_support(physical_device, i, surface)?
-                }  {
-                present = Some(i);
-            }
-            if let (Some(g), Some(p)) = (graphics, present) {
-                return Ok(Self {
-                    graphics: g,
-                    present: p,
-                });
-            }
-        }
-        return Err(anyhow!("Device does not support required queue families!"));
-    }
-}
-
-//phyiscal device
-unsafe fn check_physical_device(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
-    surface: vk::SurfaceKHR,
-    surface_loader: &ash::khr::surface::Instance
-) -> Result<QueueFamilyIndices> {
-    let indicies = unsafe {
-        QueueFamilyIndices::get(instance, physical_device, surface, surface_loader)?
-    };
-    (unsafe { check_device_extension_support(instance, physical_device) })?;
-
-    let details = unsafe {
-        render_target::swapchain::SwapchainSupportDetails::get(physical_device, surface, surface_loader)?
-    };
-    if details.formats.is_empty() || details.present_modes.is_empty() {
-        return Err(
-            anyhow!(
-                "GPU supports Swapchwain extension, but has no compatible formats or present modes"
-            )
-        );
-    }
-    Ok(indicies)
-}
-
-unsafe fn check_device_extension_support(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice
-) -> Result<()> {
-    let available_extensions = (unsafe {
-        instance.enumerate_device_extension_properties(physical_device)
-    })?;
-    let available_extensions_names: std::collections::HashSet<String> = available_extensions
-        .iter()
-        .map(|ext| { utils::vk_to_cstr(&ext.extension_name).to_string_lossy().into_owned() })
-        .collect();
-
-    for &extension in DEVICE_EXTENSIONS {
-        let name = extension.to_string_lossy().into_owned();
-        if !available_extensions_names.contains(&name) {
-            return Err(anyhow!("Missing required extension: {}", name));
-        }
-    }
-
-    Ok(())
-}
-
-unsafe fn pick_physical_device(
-    instance: &Instance,
-    surface: vk::SurfaceKHR,
-    surface_loader: &ash::khr::surface::Instance
-) -> Result<(PhysicalDevice, QueueFamilyIndices)> {
-    let physical_devices = (unsafe { instance.enumerate_physical_devices() })?;
-    for &physical_device in physical_devices.iter() {
-        let properties = unsafe { instance.get_physical_device_properties(physical_device) };
-        let name = utils::vk_to_cstr(&properties.device_name);
-        //TODO: add scoring to pick best gpu first
-        match unsafe {
-                check_physical_device(instance, physical_device, surface, surface_loader)
-            }  {
-            Result::Ok(indices) => {
-                info!("Selected GPU: {:?}", name);
-                return Ok((physical_device, indices));
-            }
-            Result::Err(e) => {
-                warn!("Skipping GPU {:?}: {}", name, e);
-            }
-        }
-    }
-    Err(anyhow!("Failed to pick any suitable device!"))
-}
 
 
-fn setup_command_pool(logical_device: &ash::Device, q_family_indices: QueueFamilyIndices, deletion_queue: &mut DeletionQueue) -> Result<vk::CommandPool> {
-     let pool_info = vk::CommandPoolCreateInfo
-            ::default()
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-            .queue_family_index(q_family_indices.graphics);
-    let command_pool = (unsafe { logical_device.create_command_pool(&pool_info, None) })?;
-
-    let logical_device_clone = logical_device.clone();
-    deletion_queue.push(move || unsafe {
-        logical_device_clone.destroy_command_pool(command_pool, None);
-    });
-    Ok(command_pool)
-}
-
-
-
-//debug
-fn setup_debugging(entry: &ash::Entry, instance: &ash::Instance, deletion_queue: &mut DeletionQueue) -> Result<(ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)> {
-    let (debug_loader, debug_messenger) = (unsafe {
-        setup_debug_messenger(entry, instance)
-    })?;
-    let deletion_queue_clone = debug_loader.clone();
-    deletion_queue.push(move || {
-        unsafe {
-            deletion_queue_clone.destroy_debug_utils_messenger(debug_messenger, None);
-        }
-    });
-    Ok((debug_loader, debug_messenger))
-}
-
-extern "system" fn debug_callback(
-    message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
-    message_type: vk::DebugUtilsMessageTypeFlagsEXT,
-    p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
-    _: *mut c_void
-) -> vk::Bool32 {
-    let data = unsafe { *p_callback_data };
-    let message = unsafe { CStr::from_ptr(data.p_message) };
-
-    match message_severity {
-        vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => {
-            error!("{:?} - {:?}", message_type, message);
-        }
-        vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => {
-            warn!("{:?} - {:?}", message_type, message);
-        }
-        _ => info!("{:?} - {:?}", message_type, message),
-    }
-
-    vk::FALSE
-}
-
-unsafe fn setup_debug_messenger(
-    entry: &ash::Entry,
-    instance: &ash::Instance
-) -> Result<(ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)> {
-    let debug_utils_loader = ash::ext::debug_utils::Instance::new(entry, instance);
-    let create_info = vk::DebugUtilsMessengerCreateInfoEXT
-        ::default()
-        .message_severity(
-            vk::DebugUtilsMessageSeverityFlagsEXT::ERROR |
-                vk::DebugUtilsMessageSeverityFlagsEXT::INFO |
-                vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-        )
-        .message_type(
-            vk::DebugUtilsMessageTypeFlagsEXT::GENERAL |
-                vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION |
-                vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
-        )
-        .pfn_user_callback(Some(debug_callback));
-
-    let messenger = (unsafe {
-        debug_utils_loader.create_debug_utils_messenger(&create_info, None)
-    })?;
-
-    Ok((debug_utils_loader, messenger))
-}
 
 unsafe fn create_render_pass(format: vk::Format, logical_device: &ash::Device, deletion_queue: &mut DeletionQueue) -> Result<vk::RenderPass> {
     //color attachment
