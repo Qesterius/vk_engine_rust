@@ -1,3 +1,6 @@
 /target
 **/*.rs.bk
 Cargo.lock
+.cargo/config.toml
+src/rendering/shaders/*.spv
+src/rendering/shaders/*.spirv
