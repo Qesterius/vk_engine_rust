@@ -1,8 +1,11 @@
 use anyhow::{Ok, Result};
 use ash::vk;
+use bevy_ecs::component::Component;
 
 use crate::rendering::{buffer, cleanup::DeletionQueue, vertex::Vertex};
 
+use crate::{device::device::Device, rendering::{buffer, vertex::Vertex}};
+#[derive(Component)]
 pub struct Mesh {
     pub vertex_buffer: vk::Buffer,
     pub vertex_buffer_memory: vk::DeviceMemory,

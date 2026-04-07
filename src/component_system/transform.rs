@@ -1,5 +1,7 @@
+use bevy_ecs::component::Component;
 use cgmath::Rotation3;
 
+#[derive(Component)]
 pub struct Transform {
     pub position: cgmath::Vector3<f32>,
     pub rotation: cgmath::Quaternion<f32>,

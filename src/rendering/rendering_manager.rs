@@ -2,11 +2,15 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use ash::vk;
+use bevy_ecs::resource::Resource;
+use bevy_ecs::world::World;
 use log::{info, warn};
 
 use crate::config::MAX_FRAMES_IN_FLIGHT;
-use crate::component_system::simple_component_manager::ComponentManager;
 use crate::device::device::Device;
+use crate::time::RenderedFrameCount;
+use crate::rendering::components::mesh::Mesh;
+use crate::rendering::rendering_instance::RenderingInstance;
 use crate::rendering::{
     buffer, descriptor, memory,
     rendering_canvas::canvas::Canvas,
@@ -24,6 +28,7 @@ struct FrameData {
     uniform_buffer_memory: vk::DeviceMemory,
 }
 
+#[derive(Resource)]
 pub struct RenderingManager {
     device: Arc<Device>,
     pub canvas: Canvas,
@@ -46,8 +51,6 @@ pub struct RenderingManager {
     in_flight_fences: Vec<vk::Fence>,
     // Tracks which frame fence is currently rendering to each swapchain image
     images_in_flight_fences: Vec<vk::Fence>,
-
-    current_frame: usize,
 }
 
 impl RenderingManager {
@@ -95,12 +98,12 @@ impl RenderingManager {
             render_finished_semaphores,
             in_flight_fences,
             images_in_flight_fences,
-            current_frame: 0,
         })
     }
 
-    pub fn render(&mut self, component_manager: &ComponentManager) -> Result<()> {
-        let sync_idx = self.current_frame % MAX_FRAMES_IN_FLIGHT;
+    pub fn render(&mut self, world: &mut World) -> Result<()> {
+let current_frame = world.resource::<RenderedFrameCount>().0 as usize;
+        let sync_idx = current_frame % MAX_FRAMES_IN_FLIGHT;
         let device = &self.device.logical_device;
 
         // Wait for this frame slot to be free
@@ -209,9 +212,9 @@ impl RenderingManager {
                 &[],
             );
 
-            for (i, mesh_opt) in component_manager.meshes.iter().enumerate() {
-                if let Some(mesh) = mesh_opt {
-                    if let Some(transform) = component_manager.transforms.get(i).and_then(|t| t.as_ref()) {
+            let mut query = world.query::<(&Mesh, &Transform)>();
+
+            for (mesh, transform) in query.iter(world) {
                         let push = MeshPushConstants::new(transform.to_matrix());
                         device.cmd_push_constants(
                             cmd,
@@ -222,8 +225,6 @@ impl RenderingManager {
                         );
                         mesh.bind(device, cmd);
                         mesh.draw(device, cmd);
-                    }
-                }
             }
 
             device.cmd_end_render_pass(cmd);
@@ -267,7 +268,7 @@ impl RenderingManager {
             Err(e) => return Err(anyhow!("Failed to present: {}", e)),
         }
 
-        self.current_frame += 1;
+        world.resource_mut::<RenderedFrameCount>().0 += 1;
         Ok(())
     }
 
