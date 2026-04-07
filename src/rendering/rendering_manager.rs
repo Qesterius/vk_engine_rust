@@ -6,6 +6,9 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
 use log::{info, warn};
 
+use std::sync::atomic::Ordering;
+
+use crate::component_system::transform::Transform;
 use crate::config::MAX_FRAMES_IN_FLIGHT;
 use crate::device::device::Device;
 use crate::time::RenderedFrameCount;
@@ -56,13 +59,13 @@ pub struct RenderingManager {
 impl RenderingManager {
     pub fn new(
         device: Arc<Device>,
-        instance: ash::Instance,
+        rendering_instance: Arc<RenderingInstance>,
         surface: vk::SurfaceKHR,
         surface_loader: ash::khr::surface::Instance,
         window_size: winit::dpi::PhysicalSize<u32>,
     ) -> Result<Self> {
         let canvas = unsafe {
-            Canvas::new(Arc::clone(&device), instance, surface, surface_loader, window_size)
+            Canvas::new(Arc::clone(&device), rendering_instance, surface, surface_loader, window_size)
         }?;
 
         let (descriptor_set_layout, descriptor_pool) =
@@ -108,6 +111,13 @@ let current_frame = world.resource::<RenderedFrameCount>().0 as usize;
 
         // Wait for this frame slot to be free
         unsafe { device.wait_for_fences(&[self.in_flight_fences[sync_idx]], true, u64::MAX) }?;
+        // Fence is signaled: GPU finished all work submitted in the previous use of this slot.
+
+        // Update the shared sync index so dynamic entities drops are  pushed 
+        // to the correct dynamic queue,
+        self.device.current_sync_idx.store(sync_idx, Ordering::Relaxed);
+        // ... flush anything queued for destruction from that previous use.
+        self.device.flush_dynamic_deletion_queue(sync_idx);
 
         // Acquire swapchain image
         let image_index = match unsafe {

@@ -6,11 +6,12 @@ use anyhow::{Result, anyhow};
 use log::info;
 
 use crate::device::device::Device;
+use crate::rendering::rendering_instance::RenderingInstance;
 use super::{depth_buffer::DepthBuffer, swapchain::SwapchainState};
 
 pub struct Canvas {
     device: Arc<Device>,
-    instance: ash::Instance,
+    rendering_instance: Arc<RenderingInstance>,
     pub surface_loader: ash::khr::surface::Instance,
     pub surface: vk::SurfaceKHR,
     // ManuallyDrop so we control destruction order in Drop:
@@ -24,13 +25,13 @@ pub struct Canvas {
 impl Canvas {
     pub unsafe fn new(
         device: Arc<Device>,
-        instance: ash::Instance,
+        rendering_instance: Arc<RenderingInstance>,
         surface: vk::SurfaceKHR,
         surface_loader: ash::khr::surface::Instance,
         window_size: winit::dpi::PhysicalSize<u32>,
     ) -> Result<Self> {
         let swapchain = unsafe {
-            SwapchainState::new(&device, &instance, surface, &surface_loader, window_size)
+            SwapchainState::new(&device, &rendering_instance.instance, surface, &surface_loader, window_size)
         }?;
 
         let render_pass = unsafe { create_render_pass(swapchain.format, &device.logical_device) }?;
@@ -43,7 +44,7 @@ impl Canvas {
 
         Ok(Self {
             device,
-            instance,
+            rendering_instance,
             surface_loader,
             surface,
             swapchain: ManuallyDrop::new(swapchain),
@@ -77,7 +78,7 @@ impl Canvas {
         unsafe { ManuallyDrop::drop(&mut self.swapchain) };
 
         let new_swapchain = unsafe {
-            SwapchainState::new(&self.device, &self.instance, self.surface, &self.surface_loader, window_size)
+            SwapchainState::new(&self.device, &self.rendering_instance.instance, self.surface, &self.surface_loader, window_size)
         }?;
         let new_depth = DepthBuffer::new(Arc::clone(&self.device), new_swapchain.extent)?;
         let new_framebuffers = unsafe {

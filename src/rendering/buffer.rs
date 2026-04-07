@@ -55,7 +55,6 @@ pub unsafe fn create_vertex_buffer<T: Copy>(
     device: &ash::Device,
     mem_props: &vk::PhysicalDeviceMemoryProperties,
     data: &[T],
-    deletion_queue: &mut DeletionQueue,
 ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
     let size = (std::mem::size_of::<T>() * data.len()) as vk::DeviceSize;
     let (buf, mem) = create_buffer(
@@ -66,11 +65,6 @@ pub unsafe fn create_vertex_buffer<T: Copy>(
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
     )?;
     unsafe { map_and_copy(device, mem, data) }?;
-    let d = device.clone();
-    deletion_queue.push(move || unsafe {
-        d.destroy_buffer(buf, None);
-        d.free_memory(mem, None);
-    });
     Ok((buf, mem))
 }
 
@@ -78,7 +72,6 @@ pub unsafe fn create_index_buffer(
     device: &ash::Device,
     mem_props: &vk::PhysicalDeviceMemoryProperties,
     indices: &[u32],
-    deletion_queue: &mut DeletionQueue,
 ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
     let size = (std::mem::size_of::<u32>() * indices.len()) as vk::DeviceSize;
     let (buf, mem) = create_buffer(
@@ -89,10 +82,5 @@ pub unsafe fn create_index_buffer(
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
     )?;
     unsafe { map_and_copy(device, mem, indices) }?;
-    let d = device.clone();
-    deletion_queue.push(move || unsafe {
-        d.destroy_buffer(buf, None);
-        d.free_memory(mem, None);
-    });
     Ok((buf, mem))
 }

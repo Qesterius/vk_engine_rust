@@ -1,9 +1,11 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashSet;
 use ash::vk;
 use anyhow::{Result, anyhow, Context};
 use log::{info, warn};
 
+use crate::config::MAX_FRAMES_IN_FLIGHT;
 use crate::rendering::{
     cleanup::DeletionQueue, 
     rendering_canvas::swapchain::SwapchainSupportDetails, 
@@ -21,7 +23,16 @@ pub struct Device {
     pub present_queue: vk::Queue,
     pub queue_family_indices: QueueFamilyIndices,
     pub command_pool: vk::CommandPool,
-    pub deletion_queue: DeletionQueue,
+    /// The frame-in-flight slot index currently being rendered.
+    /// Drop functions cant have extra arguments so it cannot be a resource
+    /// its used to register resource cleanup functions in the correct dynamic deletion queue.
+    pub current_sync_idx: AtomicUsize,
+    /// Lifetime-of-engine resources (command pool, etc.).
+    pub static_deletion_queue: Mutex<DeletionQueue>,
+    /// Per-frame-in-flight queues for resources destroyed at runtime (mesh buffers etc.).
+    /// Slot N is flushed at the start of the next frame that reuses slot N, right after
+    /// the fence wait — guaranteeing the GPU is no longer referencing those resources.
+    pub dynamic_deletion_queues: Vec<Mutex<DeletionQueue>>,
 }
 
 impl Device {
@@ -46,8 +57,16 @@ impl Device {
             instance.get_physical_device_memory_properties(physical_device) 
         };
 
-        let mut deletion_queue = DeletionQueue::new();
-        let command_pool = setup_command_pool(&logical_device, &queue_family_indices, &mut deletion_queue)?;
+        let mut dynamic_deletion_queues = Vec::new();
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            let mut q = Mutex::new(DeletionQueue::new());
+            q.lock().unwrap().push(|| info!("Flushed unused resources from previous frame"));
+            dynamic_deletion_queues.push(q);
+        }
+        let mut static_deletion_queue = Mutex::new(DeletionQueue::new());
+        static_deletion_queue.lock().unwrap().push(|| info!("Flushed all static vulkan resources"));
+
+        let command_pool = setup_command_pool(&logical_device, &queue_family_indices, &mut static_deletion_queue.lock().unwrap())?;
 
         Ok(Arc::new(Self { 
             logical_device, 
@@ -57,9 +76,20 @@ impl Device {
             present_queue, 
             queue_family_indices, 
             command_pool, 
-            deletion_queue 
+            current_sync_idx: AtomicUsize::new(0),
+            static_deletion_queue,
+            dynamic_deletion_queues,
         }))
     }
+
+
+    pub fn flush_dynamic_deletion_queue(&self, frame_index: usize) {
+        self.dynamic_deletion_queues[frame_index].lock().unwrap().flush();
+    }
+    pub fn flush_static_deletion_queue(&self) {
+        self.static_deletion_queue.lock().unwrap().flush();
+    }
+
 }
 
 impl Drop for Device {
@@ -69,7 +99,10 @@ impl Drop for Device {
             let _ = self.logical_device.device_wait_idle();
             
             // Flush deletion queue (CommandPool, etc.)
-            self.deletion_queue.flush();
+            for i in 0..MAX_FRAMES_IN_FLIGHT {
+                self.flush_dynamic_deletion_queue(i);
+            }
+            self.flush_static_deletion_queue();
             
             // Finally, destroy the device
             self.logical_device.destroy_device(None);
