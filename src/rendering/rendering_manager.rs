@@ -11,18 +11,18 @@ use std::sync::atomic::Ordering;
 use crate::component_system::transform::Transform;
 use crate::config::MAX_FRAMES_IN_FLIGHT;
 use crate::device::device::Device;
-use crate::time::RenderedFrameCount;
 use crate::rendering::components::mesh::Mesh;
 use crate::rendering::rendering_instance::RenderingInstance;
+use crate::rendering::vertex::Vertex;
 use crate::rendering::{
     buffer, descriptor, memory,
-    rendering_canvas::canvas::Canvas,
-    vertex::{MeshPushConstants, UniformBufferObject},
-    shaders::{load_shader_module},
     pipeline::pipeline_builder::PipelineBuilder,
+    rendering_canvas::canvas::Canvas,
+    shaders::load_shader_module,
+    vertex::{MeshPushConstants, UniformBufferObject},
 };
+use crate::time::RenderedFrameCount;
 use crate::utils;
-use crate::rendering::vertex::Vertex;
 
 struct FrameData {
     command_buffer: vk::CommandBuffer,
@@ -65,7 +65,13 @@ impl RenderingManager {
         window_size: winit::dpi::PhysicalSize<u32>,
     ) -> Result<Self> {
         let canvas = unsafe {
-            Canvas::new(Arc::clone(&device), rendering_instance, surface, surface_loader, window_size)
+            Canvas::new(
+                Arc::clone(&device),
+                rendering_instance,
+                surface,
+                surface_loader,
+                window_size,
+            )
         }?;
 
         let (descriptor_set_layout, descriptor_pool) =
@@ -86,8 +92,12 @@ impl RenderingManager {
         )?;
 
         let swapchain_image_count = canvas.swapchain.images.len();
-        let (image_available_semaphores, render_finished_semaphores, in_flight_fences, images_in_flight_fences) =
-            create_sync_objects(&device.logical_device, swapchain_image_count)?;
+        let (
+            image_available_semaphores,
+            render_finished_semaphores,
+            in_flight_fences,
+            images_in_flight_fences,
+        ) = create_sync_objects(&device.logical_device, swapchain_image_count)?;
 
         Ok(Self {
             device,
@@ -105,7 +115,7 @@ impl RenderingManager {
     }
 
     pub fn render(&mut self, world: &mut World) -> Result<()> {
-let current_frame = world.resource::<RenderedFrameCount>().0 as usize;
+        let current_frame = world.resource::<RenderedFrameCount>().0 as usize;
         let sync_idx = current_frame % MAX_FRAMES_IN_FLIGHT;
         let device = &self.device.logical_device;
 
@@ -113,9 +123,11 @@ let current_frame = world.resource::<RenderedFrameCount>().0 as usize;
         unsafe { device.wait_for_fences(&[self.in_flight_fences[sync_idx]], true, u64::MAX) }?;
         // Fence is signaled: GPU finished all work submitted in the previous use of this slot.
 
-        // Update the shared sync index so dynamic entities drops are  pushed 
+        // Update the shared sync index so dynamic entities drops are  pushed
         // to the correct dynamic queue,
-        self.device.current_sync_idx.store(sync_idx, Ordering::Relaxed);
+        self.device
+            .current_sync_idx
+            .store(sync_idx, Ordering::Relaxed);
         // ... flush anything queued for destruction from that previous use.
         self.device.flush_dynamic_deletion_queue(sync_idx);
 
@@ -184,13 +196,25 @@ let current_frame = world.resource::<RenderedFrameCount>().0 as usize;
         }
 
         let clear_values = [
-            vk::ClearValue { color: vk::ClearColorValue { float32: [0.2, 0.3, 0.3, 1.0] } },
-            vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 } },
+            vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.2, 0.3, 0.3, 1.0],
+                },
+            },
+            vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                },
+            },
         ];
         let render_pass_info = vk::RenderPassBeginInfo::default()
             .render_pass(self.canvas.render_pass)
             .framebuffer(self.canvas.framebuffers[img_idx])
-            .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent })
+            .render_area(vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent,
+            })
             .clear_values(&clear_values);
 
         unsafe {
@@ -201,16 +225,21 @@ let current_frame = world.resource::<RenderedFrameCount>().0 as usize;
                 cmd,
                 0,
                 &[vk::Viewport {
-                    x: 0.0, y: 0.0,
+                    x: 0.0,
+                    y: 0.0,
                     width: extent.width as f32,
                     height: extent.height as f32,
-                    min_depth: 0.0, max_depth: 1.0,
+                    min_depth: 0.0,
+                    max_depth: 1.0,
                 }],
             );
             device.cmd_set_scissor(
                 cmd,
                 0,
-                &[vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent }],
+                &[vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent,
+                }],
             );
 
             device.cmd_bind_descriptor_sets(
@@ -225,16 +254,16 @@ let current_frame = world.resource::<RenderedFrameCount>().0 as usize;
             let mut query = world.query::<(&Mesh, &Transform)>();
 
             for (mesh, transform) in query.iter(world) {
-                        let push = MeshPushConstants::new(transform.to_matrix());
-                        device.cmd_push_constants(
-                            cmd,
-                            self.pipeline_layout,
-                            vk::ShaderStageFlags::VERTEX,
-                            0,
-                            utils::any_as_u8_slice(&push),
-                        );
-                        mesh.bind(device, cmd);
-                        mesh.draw(device, cmd);
+                let push = MeshPushConstants::new(transform.to_matrix());
+                device.cmd_push_constants(
+                    cmd,
+                    self.pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    utils::any_as_u8_slice(&push),
+                );
+                mesh.bind(device, cmd);
+                mesh.draw(device, cmd);
             }
 
             device.cmd_end_render_pass(cmd);
@@ -269,7 +298,10 @@ let current_frame = world.resource::<RenderedFrameCount>().0 as usize;
             .image_indices(&image_indices);
 
         match unsafe {
-            self.canvas.swapchain.loader.queue_present(self.device.present_queue, &present_info)
+            self.canvas
+                .swapchain
+                .loader
+                .queue_present(self.device.present_queue, &present_info)
         } {
             Ok(_) => {}
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
@@ -288,7 +320,8 @@ let current_frame = world.resource::<RenderedFrameCount>().0 as usize;
         // Resize images_in_flight_fences to match new swapchain image count
         let new_image_count = self.canvas.swapchain.images.len();
         self.images_in_flight_fences.clear();
-        self.images_in_flight_fences.resize(new_image_count, vk::Fence::null());
+        self.images_in_flight_fences
+            .resize(new_image_count, vk::Fence::null());
 
         // Recreate render_finished semaphores to match new image count
         let device = &self.device.logical_device;
@@ -349,7 +382,11 @@ fn create_descriptor_resources(
     device: &ash::Device,
 ) -> Result<(vk::DescriptorSetLayout, vk::DescriptorPool)> {
     let layout = descriptor::DescriptorLayoutBuilder::new()
-        .add_binding(0, vk::DescriptorType::UNIFORM_BUFFER, vk::ShaderStageFlags::VERTEX)
+        .add_binding(
+            0,
+            vk::DescriptorType::UNIFORM_BUFFER,
+            vk::ShaderStageFlags::VERTEX,
+        )
         .build(device)?;
     let pool = descriptor::create_descriptor_pool(device, MAX_FRAMES_IN_FLIGHT as u32)?;
     Ok((layout, pool))
@@ -404,8 +441,12 @@ fn allocate_frames(
         unsafe { device.allocate_command_buffers(&alloc_info) }?
     };
 
-    let descriptor_sets =
-        descriptor::allocate_descriptor_sets(device, descriptor_pool, descriptor_set_layout, MAX_FRAMES_IN_FLIGHT as u32)?;
+    let descriptor_sets = descriptor::allocate_descriptor_sets(
+        device,
+        descriptor_pool,
+        descriptor_set_layout,
+        MAX_FRAMES_IN_FLIGHT as u32,
+    )?;
 
     let ubo_size = std::mem::size_of::<UniformBufferObject>() as vk::DeviceSize;
     let mut frames = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -441,7 +482,12 @@ fn allocate_frames(
 fn create_sync_objects(
     device: &ash::Device,
     swapchain_image_count: usize,
-) -> Result<(Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>, Vec<vk::Fence>)> {
+) -> Result<(
+    Vec<vk::Semaphore>,
+    Vec<vk::Semaphore>,
+    Vec<vk::Fence>,
+    Vec<vk::Fence>,
+)> {
     let sem_info = vk::SemaphoreCreateInfo::default();
     let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
 
@@ -459,5 +505,10 @@ fn create_sync_objects(
 
     let images_in_flight = vec![vk::Fence::null(); swapchain_image_count];
 
-    Ok((image_available, render_finished, in_flight, images_in_flight))
+    Ok((
+        image_available,
+        render_finished,
+        in_flight,
+        images_in_flight,
+    ))
 }

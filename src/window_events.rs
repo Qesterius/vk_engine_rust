@@ -14,8 +14,6 @@ pub struct WindowEvents {
 #[derive(Resource, Default)]
 pub struct AppExit(pub bool);
 
-pub fn clear_window_events(
-    mut events: bevy_ecs::system::ResMut<WindowEvents>,
-) {
+pub fn clear_window_events(mut events: bevy_ecs::system::ResMut<WindowEvents>) {
     *events = WindowEvents::default();
 }

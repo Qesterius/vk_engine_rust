@@ -1,9 +1,8 @@
-use ash::vk;
 use anyhow::Result;
+use ash::vk;
 
 use super::cleanup::DeletionQueue;
 use super::memory::{find_memory_type, map_and_copy};
-
 
 /// Creates a Vulkan Buffer and allocates its backing Device Memory.
 ///
@@ -26,7 +25,6 @@ pub fn create_buffer(
     usage: vk::BufferUsageFlags,
     properties: vk::MemoryPropertyFlags,
 ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
-
     let buffer_info = vk::BufferCreateInfo::default()
         .size(size)
         .usage(usage)

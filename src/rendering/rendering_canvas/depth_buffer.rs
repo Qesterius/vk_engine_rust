@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
+use anyhow::{Ok, Result};
 use ash::vk;
-use anyhow::{Result, Ok};
 
 use crate::device::device::Device;
 use crate::rendering::memory::find_memory_type;
@@ -14,10 +14,7 @@ pub struct DepthBuffer {
 }
 
 impl DepthBuffer {
-    pub fn new(
-        device: Arc<Device>,
-        extent: vk::Extent2D,
-    ) -> Result<Self> {
+    pub fn new(device: Arc<Device>, extent: vk::Extent2D) -> Result<Self> {
         let depth_format = vk::Format::D32_SFLOAT;
 
         // image
@@ -71,9 +68,15 @@ impl DepthBuffer {
 impl Drop for DepthBuffer {
     fn drop(&mut self) {
         unsafe {
-            self.device.logical_device.destroy_image_view(self.depth_view, None);
-            self.device.logical_device.destroy_image(self.depth_image, None);
-            self.device.logical_device.free_memory(self.depth_memory, None);
+            self.device
+                .logical_device
+                .destroy_image_view(self.depth_view, None);
+            self.device
+                .logical_device
+                .destroy_image(self.depth_image, None);
+            self.device
+                .logical_device
+                .free_memory(self.depth_memory, None);
         }
     }
 }

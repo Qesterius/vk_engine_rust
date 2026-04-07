@@ -1,15 +1,15 @@
-use ash::vk;
-use anyhow::Result;
 use anyhow::Ok;
+use anyhow::Result;
+use ash::vk;
 
 /// Finds a memory type index that supports both the required bits (from the resource)
 /// and the desired properties (e.g. Host Visible, Device Local).
-/// 
+///
 /// This function searches through the available memory types on the physical device
 /// and returns the first one that satisfies both the type filter (which specifies
 /// what kind of memory is required for the resource) and the property requirements
 /// (such as HOST_VISIBLE for CPU access or DEVICE_LOCAL for GPU-only memory).
-/// 
+///
 /// # Arguments
 /// * `instance` - The Vulkan instance used to query memory properties
 /// * `physical_device` - The physical device whose memory properties are queried
@@ -30,12 +30,12 @@ pub fn find_memory_type(
 }
 
 /// Helper function to send memory to GPU VRAM.
-/// 
+///
 /// This function maps device memory, copies data to it, and unmaps it.
 /// It only works if the memory was allocated with the HOST_VISIBLE flag.
 /// If the memory is DEVICE_LOCAL (GPU-only), you cannot map it directly.
 /// In that case, you would need a "Staging Buffer" to act as a middleman.
-/// 
+///
 /// # Arguments
 /// * `device` - The Vulkan device used to map and unmap the memory
 /// * `memory` - The device memory handle to map and copy to
@@ -51,5 +51,3 @@ pub unsafe fn map_and_copy<T: Copy>(
     unsafe { device.unmap_memory(memory) };
     Ok(())
 }
-
-

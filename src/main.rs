@@ -1,21 +1,21 @@
-mod utils;
-mod config;
-mod rendering;
 mod component_system;
-mod engine;
+mod config;
 mod device;
+mod engine;
+mod rendering;
 mod time;
+mod utils;
 mod window_events;
 
-use crate::engine::Engine;
 use crate::config::APPLICATION_TITLE;
+use crate::engine::Engine;
 use crate::window_events::{AppExit, WindowEvents};
+use anyhow::Result;
 use log::{error, info};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{WindowAttributes, WindowId};
-use anyhow::Result;
 
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -31,9 +31,8 @@ struct App {
 
 impl App {
     fn init_engine(&self, event_loop: &ActiveEventLoop) -> Result<Engine> {
-        let window = event_loop.create_window(
-            WindowAttributes::default().with_title(APPLICATION_TITLE)
-        )?;
+        let window =
+            event_loop.create_window(WindowAttributes::default().with_title(APPLICATION_TITLE))?;
         Engine::new(window)
     }
 
@@ -75,7 +74,6 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-
         match event {
             WindowEvent::CloseRequested => {
                 info!("Close requested, exiting...");

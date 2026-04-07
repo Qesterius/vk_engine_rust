@@ -27,4 +27,4 @@ impl Default for Time {
         }
     }
 }
-//TODO implement timestamp and timer system for animations 
+//TODO implement timestamp and timer system for animations

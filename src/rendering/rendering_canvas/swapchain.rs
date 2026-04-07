@@ -1,9 +1,8 @@
-use std::sync::Arc;
-use ash::vk;
 use anyhow::Result;
+use ash::vk;
+use std::sync::Arc;
 
 use crate::device::device::Device;
-
 
 #[derive(Clone)]
 pub struct SwapchainState {
@@ -35,7 +34,9 @@ impl SwapchainState {
         surface_loader: &ash::khr::surface::Instance,
         size: winit::dpi::PhysicalSize<u32>,
     ) -> Result<Self> {
-        let support = unsafe { SwapchainSupportDetails::get(device.physical_device, surface, surface_loader) }?;
+        let support = unsafe {
+            SwapchainSupportDetails::get(device.physical_device, surface, surface_loader)
+        }?;
 
         let surface_format = get_swapchain_surface_format(&support.formats);
         let present_mode = get_swapchain_present_mode(&support.present_modes);
@@ -101,7 +102,11 @@ impl SwapchainState {
                         .base_array_layer(0)
                         .layer_count(1),
                 );
-            let image_view = unsafe { device.logical_device.create_image_view(&create_view_info, None) }?;
+            let image_view = unsafe {
+                device
+                    .logical_device
+                    .create_image_view(&create_view_info, None)
+            }?;
             swapchain_image_views.push(image_view);
         }
 
@@ -117,11 +122,16 @@ impl SwapchainState {
     }
 }
 
-pub(crate) fn get_swapchain_surface_format(formats: &[vk::SurfaceFormatKHR]) -> vk::SurfaceFormatKHR {
+pub(crate) fn get_swapchain_surface_format(
+    formats: &[vk::SurfaceFormatKHR],
+) -> vk::SurfaceFormatKHR {
     formats
         .iter()
         .cloned()
-        .find(|f| f.format == vk::Format::B8G8R8A8_SRGB && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
+        .find(|f| {
+            f.format == vk::Format::B8G8R8A8_SRGB
+                && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+        })
         .unwrap_or_else(|| formats[0])
 }
 
@@ -149,9 +159,12 @@ impl SwapchainSupportDetails {
             capabilites: unsafe {
                 surface_loader.get_physical_device_surface_capabilities(physical_device, surface)?
             },
-            formats: unsafe { surface_loader.get_physical_device_surface_formats(physical_device, surface)? },
+            formats: unsafe {
+                surface_loader.get_physical_device_surface_formats(physical_device, surface)?
+            },
             present_modes: unsafe {
-                surface_loader.get_physical_device_surface_present_modes(physical_device, surface)?
+                surface_loader
+                    .get_physical_device_surface_present_modes(physical_device, surface)?
             },
         })
     }

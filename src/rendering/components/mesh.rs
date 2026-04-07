@@ -6,7 +6,10 @@ use bevy_ecs::component::Component;
 
 use std::sync::atomic::Ordering;
 
-use crate::{device::device::Device, rendering::{buffer, vertex::Vertex}};
+use crate::{
+    device::device::Device,
+    rendering::{buffer, vertex::Vertex},
+};
 #[derive(Component)]
 pub struct Mesh {
     device: Arc<Device>,
@@ -68,7 +71,6 @@ impl Mesh {
             index_count: indices.len() as u32,
         })
     }
-    
 }
 
 impl Drop for Mesh {
@@ -80,17 +82,20 @@ impl Drop for Mesh {
         // any slot is safe — all dynamic queues are flushed in Device::drop.
         let slot = self.device.current_sync_idx.load(Ordering::Relaxed);
 
-        let d  = self.device.logical_device.clone();
-        let vb  = self.vertex_buffer;
+        let d = self.device.logical_device.clone();
+        let vb = self.vertex_buffer;
         let vbm = self.vertex_buffer_memory;
-        let ib  = self.index_buffer;
+        let ib = self.index_buffer;
         let ibm = self.index_buffer_memory;
 
-        self.device.dynamic_deletion_queues[slot].lock().unwrap().push(move || unsafe {
-            d.destroy_buffer(vb, None);
-            d.free_memory(vbm, None);
-            d.destroy_buffer(ib, None);
-            d.free_memory(ibm, None);
-        });
+        self.device.dynamic_deletion_queues[slot]
+            .lock()
+            .unwrap()
+            .push(move || unsafe {
+                d.destroy_buffer(vb, None);
+                d.free_memory(vbm, None);
+                d.destroy_buffer(ib, None);
+                d.free_memory(ibm, None);
+            });
     }
 }

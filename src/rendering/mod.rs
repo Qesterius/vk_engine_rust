@@ -1,11 +1,11 @@
-pub mod pipeline;
-pub mod cleanup;
-pub mod vertex;
-pub mod rendering_canvas;
-pub mod memory;
 pub mod buffer;
-pub mod descriptor;
+pub mod cleanup;
 pub mod components;
+pub mod descriptor;
+pub mod memory;
+pub mod pipeline;
+pub mod rendering_canvas;
 pub mod rendering_instance;
 pub mod rendering_manager;
 pub mod shaders;
+pub mod vertex;

@@ -1,5 +1,5 @@
-use ash::vk;
 use anyhow::{Result, anyhow};
+use ash::vk;
 
 pub unsafe fn load_shader_module(device: &ash::Device, path: &str) -> Result<vk::ShaderModule> {
     let file = std::fs::File::open(path)

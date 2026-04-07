@@ -6,17 +6,16 @@ use bevy_ecs::{schedule::Schedule, system::Query, world::Mut};
 use cgmath::{Quaternion, Rotation3};
 use winit::window::Window;
 
+use crate::component_system::transform::Transform;
 use crate::{
     device::device::Device,
     rendering::{
-        components::mesh::Mesh,
-        rendering_instance::RenderingInstance,
+        components::mesh::Mesh, rendering_instance::RenderingInstance,
         rendering_manager::RenderingManager,
     },
-    time::{Time, RenderedFrameCount},
+    time::{RenderedFrameCount, Time},
     window_events::{AppExit, WindowEvents, clear_window_events},
 };
-use crate::component_system::transform::Transform;
 
 // Main engine sctruct. It is responsible for scheduling and running ecs systems
 pub struct Engine {
@@ -67,10 +66,7 @@ impl Engine {
 
         // --- Entities ---
         for i in 0..10 {
-            let cube = Mesh::new_cube(
-                &device.memory_properties,
-                Arc::clone(&device),
-            )?;
+            let cube = Mesh::new_cube(&device.memory_properties, Arc::clone(&device))?;
             let mut transform = Transform::new([0.0, 0.0, 0.0]);
             transform.translate(cgmath::Vector3 {
                 x: i as f32,
@@ -119,9 +115,9 @@ impl Engine {
         // Pre-update: setup systems (input staging, etc.)
         self.pre_update.run(&mut self.world);
 
-        // Fixed update: 
-        // Makes sure it executes fixedupdate exactly that many times 
-        // how much steps fit since last loop 
+        // Fixed update:
+        // Makes sure it executes fixedupdate exactly that many times
+        // how much steps fit since last loop
         self.fixed_delta_accumulator += delta;
         let fixed_step = self.world.resource::<Time>().fixed_delta;
         while self.fixed_delta_accumulator >= fixed_step {
@@ -133,7 +129,7 @@ impl Engine {
         // ex. rendering
         self.update.run(&mut self.world);
 
-        // Post-update: 
+        // Post-update:
         // clear per-frame one of data like events
         self.post_update.run(&mut self.world);
 
@@ -143,25 +139,27 @@ impl Engine {
     // Idle the GPU before any Vulkan resources are freed by the world drop,
     // otherwise GPU might still try to finish work on freed buffers
     pub fn shutdown(&mut self) {
-        unsafe { let _ = self.device.logical_device.device_wait_idle(); }
+        unsafe {
+            let _ = self.device.logical_device.device_wait_idle();
+        }
     }
 
-    // Render calling outside of Bevy ECS scheduling. 
-    // It does not gain anything from concurent schedulers as its on GPU and is 
+    // Render calling outside of Bevy ECS scheduling.
+    // It does not gain anything from concurent schedulers as its on GPU and is
     // cleanly seperated from any updates on component resources
     pub fn render(&mut self) -> Result<()> {
-        self.world.resource_scope(|world, mut renderer: Mut<RenderingManager>| {
-            renderer.render(world)
-        })
+        self.world
+            .resource_scope(|world, mut renderer: Mut<RenderingManager>| renderer.render(world))
     }
 
     pub fn handle_resize(&mut self, size: winit::dpi::PhysicalSize<u32>) -> Result<()> {
-        self.world.resource_scope(|_world, mut renderer: Mut<RenderingManager>| {
-            renderer.handle_resize(size)
-        })
+        self.world
+            .resource_scope(|_world, mut renderer: Mut<RenderingManager>| {
+                renderer.handle_resize(size)
+            })
     }
 
-    // simple system to validate rendering 
+    // simple system to validate rendering
     fn rotate_all(mut query: Query<&mut Transform>) {
         let rotation_speed = cgmath::Deg(0.5);
         let step = Quaternion::from_angle_y(rotation_speed);

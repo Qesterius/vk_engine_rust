@@ -1,13 +1,13 @@
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
 
-use ash::vk;
 use anyhow::{Result, anyhow};
+use ash::vk;
 use log::info;
 
+use super::{depth_buffer::DepthBuffer, swapchain::SwapchainState};
 use crate::device::device::Device;
 use crate::rendering::rendering_instance::RenderingInstance;
-use super::{depth_buffer::DepthBuffer, swapchain::SwapchainState};
 
 pub struct Canvas {
     device: Arc<Device>,
@@ -31,7 +31,13 @@ impl Canvas {
         window_size: winit::dpi::PhysicalSize<u32>,
     ) -> Result<Self> {
         let swapchain = unsafe {
-            SwapchainState::new(&device, &rendering_instance.instance, surface, &surface_loader, window_size)
+            SwapchainState::new(
+                &device,
+                &rendering_instance.instance,
+                surface,
+                &surface_loader,
+                window_size,
+            )
         }?;
 
         let render_pass = unsafe { create_render_pass(swapchain.format, &device.logical_device) }?;
@@ -39,7 +45,12 @@ impl Canvas {
         let depth_buffer = DepthBuffer::new(Arc::clone(&device), swapchain.extent)?;
 
         let framebuffers = unsafe {
-            create_framebuffers(&device.logical_device, render_pass, &swapchain, depth_buffer.depth_view)
+            create_framebuffers(
+                &device.logical_device,
+                render_pass,
+                &swapchain,
+                depth_buffer.depth_view,
+            )
         }?;
 
         Ok(Self {
@@ -54,7 +65,10 @@ impl Canvas {
         })
     }
 
-    pub unsafe fn handle_resize(&mut self, window_size: winit::dpi::PhysicalSize<u32>) -> Result<()> {
+    pub unsafe fn handle_resize(
+        &mut self,
+        window_size: winit::dpi::PhysicalSize<u32>,
+    ) -> Result<()> {
         // Skip if dimensions haven't changed (Wayland fires Resized on initial window creation)
         // Also skip minimized windows (size 0) which would crash swapchain creation
         if window_size.width == 0 || window_size.height == 0 {
@@ -78,7 +92,13 @@ impl Canvas {
         unsafe { ManuallyDrop::drop(&mut self.swapchain) };
 
         let new_swapchain = unsafe {
-            SwapchainState::new(&self.device, &self.rendering_instance.instance, self.surface, &self.surface_loader, window_size)
+            SwapchainState::new(
+                &self.device,
+                &self.rendering_instance.instance,
+                self.surface,
+                &self.surface_loader,
+                window_size,
+            )
         }?;
         let new_depth = DepthBuffer::new(Arc::clone(&self.device), new_swapchain.extent)?;
         let new_framebuffers = unsafe {
@@ -104,7 +124,9 @@ impl Drop for Canvas {
             for &fb in &self.framebuffers {
                 self.device.logical_device.destroy_framebuffer(fb, None);
             }
-            self.device.logical_device.destroy_render_pass(self.render_pass, None);
+            self.device
+                .logical_device
+                .destroy_render_pass(self.render_pass, None);
 
             // Explicit order: depth and swapchain must die before surface
             ManuallyDrop::drop(&mut self.depth_buffer);
