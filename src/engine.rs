@@ -4,10 +4,12 @@ use std::time::Instant;
 use anyhow::Result;
 use bevy_ecs::{schedule::Schedule, system::Query, world::Mut};
 use cgmath::{Quaternion, Rotation3};
+use image::GenericImageView;
 use winit::window::Window;
 
 use crate::component_system::transform::Transform;
 use crate::{
+    assets::{self, loaders, texture::{self, Texture, TextureHandle}},
     device::device::Device,
     rendering::{
         components::mesh::Mesh, rendering_instance::RenderingInstance,
@@ -55,25 +57,36 @@ impl Engine {
         world.insert_resource(WindowEvents::default());
         world.insert_resource(AppExit::default());
 
+        let mut asset_manager = assets::asset_manager::AssetManager
+            ::new(Arc::clone(&device))?;        
+
+        let texture = asset_manager.load_texture("assets/textures/CharaWeatherReport.jpg")?;
+        
+
+
         let renderer = RenderingManager::new(
             Arc::clone(&device),
             Arc::clone(&rendering_instance),
             surface,
             surface_loader,
             window.inner_size(),
+            asset_manager.texture_descriptor_set_layout
         )?;
         world.insert_resource(renderer);
+        world.insert_resource(asset_manager);
 
-        // --- Entities ---
+
+        // --- Entities ---        
+
         for i in 0..10 {
             let cube = Mesh::new_cube(&device.memory_properties, Arc::clone(&device))?;
             let mut transform = Transform::new([0.0, 0.0, 0.0]);
             transform.translate(cgmath::Vector3 {
                 x: i as f32,
                 y: (i as f32) % 2.0,
-                z: (i as f32) % 5.0,
+                z: 6.0,
             });
-            world.spawn((cube, transform));
+            world.spawn((cube, transform, TextureHandle(Arc::clone(&texture))));
         }
 
         // --- Schedules ---

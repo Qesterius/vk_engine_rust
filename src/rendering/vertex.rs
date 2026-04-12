@@ -13,6 +13,7 @@ use cgmath::Matrix4;
 pub struct Vertex {
     pub position: [f32; 3],
     pub color: [f32; 3],
+    pub uv: [f32; 2],
 }
 
 impl Vertex {
@@ -21,8 +22,9 @@ impl Vertex {
     /// # Arguments
     /// * `position` - The 3D position coordinates [x, y, z]
     /// * `color` - The RGB color components [r, g, b]
-    pub fn new(position: [f32; 3], color: [f32; 3]) -> Self {
-        Self { position, color }
+    /// * `uv` - The UV texture coordinates [u, v]
+    pub fn new(position: [f32; 3], color: [f32; 3], uv: [f32; 2]) -> Self {
+        Self { position, color, uv }
     }
     /// Returns the vertex input binding description for this vertex structure.
     ///
@@ -39,20 +41,29 @@ impl Vertex {
     ///
     /// This function provides the attribute descriptions that tell Vulkan how to
     /// interpret the vertex data for each shader input attribute.
-    pub fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
-        [
-            vk::VertexInputAttributeDescription {
+    pub fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
+        let pos = vk::VertexInputAttributeDescription {
                 binding: 0,
                 location: 0,
                 format: vk::Format::R32G32B32_SFLOAT,
                 offset: 0,
-            },
-            vk::VertexInputAttributeDescription {
+            };
+        let color = vk::VertexInputAttributeDescription {
                 binding: 0,
                 location: 1,
                 format: vk::Format::R32G32B32_SFLOAT,
                 offset: std::mem::size_of::<[f32; 3]>() as u32,
-            },
+            };
+        let uv = vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 2,
+                format: vk::Format::R32G32_SFLOAT,
+                offset: (std::mem::size_of::<[f32; 3]>() * 2) as u32,
+            };
+        [
+            pos,
+            color,
+            uv
         ]
     }
 }

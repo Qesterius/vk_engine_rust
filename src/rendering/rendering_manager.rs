@@ -8,6 +8,7 @@ use log::{info, warn};
 
 use std::sync::atomic::Ordering;
 
+use crate::assets::texture::TextureHandle;
 use crate::component_system::transform::Transform;
 use crate::config::MAX_FRAMES_IN_FLIGHT;
 use crate::device::device::Device;
@@ -26,7 +27,7 @@ use crate::utils;
 
 struct FrameData {
     command_buffer: vk::CommandBuffer,
-    descriptor_set: vk::DescriptorSet,
+    global_descriptor_set: vk::DescriptorSet,
     uniform_buffer: vk::Buffer,
     uniform_buffer_memory: vk::DeviceMemory,
 }
@@ -39,7 +40,7 @@ pub struct RenderingManager {
     // Pipeline resources
     graphics_pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
-    descriptor_set_layout: vk::DescriptorSetLayout,
+    global_descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
 
     // Per-frame data
@@ -63,6 +64,7 @@ impl RenderingManager {
         surface: vk::SurfaceKHR,
         surface_loader: ash::khr::surface::Instance,
         window_size: winit::dpi::PhysicalSize<u32>,
+        texture_descriptor_set_layout: vk::DescriptorSetLayout,
     ) -> Result<Self> {
         let canvas = unsafe {
             Canvas::new(
@@ -74,21 +76,22 @@ impl RenderingManager {
             )
         }?;
 
-        let (descriptor_set_layout, descriptor_pool) =
+        let (ubo_descriptor_set_layout, ubo_descriptor_pool) =
             create_descriptor_resources(&device.logical_device)?;
 
         let (graphics_pipeline, pipeline_layout) = create_pipeline(
             &device.logical_device,
             canvas.render_pass,
-            descriptor_set_layout,
+            ubo_descriptor_set_layout,
+            texture_descriptor_set_layout
         )?;
 
         let frames = allocate_frames(
             &device.logical_device,
             &device.memory_properties,
             device.command_pool,
-            descriptor_set_layout,
-            descriptor_pool,
+            ubo_descriptor_set_layout,
+            ubo_descriptor_pool,
         )?;
 
         let swapchain_image_count = canvas.swapchain.images.len();
@@ -104,8 +107,8 @@ impl RenderingManager {
             canvas,
             graphics_pipeline,
             pipeline_layout,
-            descriptor_set_layout,
-            descriptor_pool,
+            global_descriptor_set_layout: ubo_descriptor_set_layout,
+            descriptor_pool: ubo_descriptor_pool,
             frames,
             image_available_semaphores,
             render_finished_semaphores,
@@ -247,13 +250,13 @@ impl RenderingManager {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline_layout,
                 0,
-                &[frame.descriptor_set],
+                &[frame.global_descriptor_set],
                 &[],
             );
 
-            let mut query = world.query::<(&Mesh, &Transform)>();
+            let mut query = world.query::<(&Mesh, &Transform, &TextureHandle)>();
 
-            for (mesh, transform) in query.iter(world) {
+            for (mesh, transform, texture) in query.iter(world) {
                 let push = MeshPushConstants::new(transform.to_matrix());
                 device.cmd_push_constants(
                     cmd,
@@ -263,6 +266,14 @@ impl RenderingManager {
                     utils::any_as_u8_slice(&push),
                 );
                 mesh.bind(device, cmd);
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.pipeline_layout,
+                    1, 
+                    &[texture.descriptor_set],
+                    &[],
+                );
                 mesh.draw(device, cmd);
             }
 
@@ -368,7 +379,7 @@ impl Drop for RenderingManager {
 
             // Descriptors
             device.destroy_descriptor_pool(self.descriptor_pool, None);
-            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+            device.destroy_descriptor_set_layout(self.global_descriptor_set_layout, None);
 
             info!("RenderingManager destroyed.");
         }
@@ -383,27 +394,38 @@ fn create_descriptor_resources(
 ) -> Result<(vk::DescriptorSetLayout, vk::DescriptorPool)> {
     let layout = descriptor::DescriptorLayoutBuilder::new()
         .add_binding(
-            0,
-            vk::DescriptorType::UNIFORM_BUFFER,
-            vk::ShaderStageFlags::VERTEX,
+            0, 
+            vk::DescriptorType::UNIFORM_BUFFER, 
+            vk::ShaderStageFlags::VERTEX
         )
         .build(device)?;
-    let pool = descriptor::create_descriptor_pool(device, MAX_FRAMES_IN_FLIGHT as u32)?;
+    let pool_sizes = [
+        vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32),
+    ];
+    let pool = descriptor::create_descriptor_pool(
+        device, 
+        MAX_FRAMES_IN_FLIGHT as u32, 
+        &pool_sizes
+    )?;
     Ok((layout, pool))
 }
 
 fn create_pipeline(
     device: &ash::Device,
     render_pass: vk::RenderPass,
-    descriptor_set_layout: vk::DescriptorSetLayout,
+    ubo_descriptor_set_layout: vk::DescriptorSetLayout,
+    texture_descriptor_set_layout: vk::DescriptorSetLayout,
 ) -> Result<(vk::Pipeline, vk::PipelineLayout)> {
     let push_constant_range = vk::PushConstantRange::default()
         .size(std::mem::size_of::<MeshPushConstants>() as u32)
         .stage_flags(vk::ShaderStageFlags::VERTEX)
         .offset(0);
 
+    let descriptor_set_layouts = [ubo_descriptor_set_layout, texture_descriptor_set_layout];
     let layout_info = vk::PipelineLayoutCreateInfo::default()
-        .set_layouts(std::slice::from_ref(&descriptor_set_layout))
+        .set_layouts(&descriptor_set_layouts)
         .push_constant_ranges(std::slice::from_ref(&push_constant_range));
     let pipeline_layout = unsafe { device.create_pipeline_layout(&layout_info, None) }?;
 
@@ -470,7 +492,7 @@ fn allocate_frames(
 
         frames.push(FrameData {
             command_buffer: cmd_bufs[i],
-            descriptor_set: descriptor_sets[i],
+            global_descriptor_set: descriptor_sets[i],
             uniform_buffer,
             uniform_buffer_memory,
         });

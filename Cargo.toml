@@ -14,6 +14,7 @@ log = "0.4"
 env_logger = "0.11.10" 
 cgmath = "0.18.0"
 bevy_ecs = "0.18.1"
+image = "0.25.10"
 
 [build-dependencies]
 anyhow = "1.0.102"

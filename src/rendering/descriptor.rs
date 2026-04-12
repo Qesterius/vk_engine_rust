@@ -136,23 +136,49 @@ pub fn update_buffer_descriptor_set(
     }
 }
 
+
+/// Updates a buffer descriptor set with a new buffer.
+/// 
+/// This function updates a descriptor set to point to a new buffer resource.
+/// It's commonly used to update uniform buffers or other buffer-based resources
+/// that may change between frames.
+pub fn update_image_descriptor_set(
+    device: &ash::Device,
+    descriptor_set: vk::DescriptorSet,
+    image_view : vk::ImageView,
+    sampler : vk::Sampler,
+    binding: u32,
+)  -> Result<()> {
+    let image_info = vk::DescriptorImageInfo::default()
+        .image_view(image_view)
+        .sampler(sampler)
+        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+
+    let descriptor_write = vk::WriteDescriptorSet::default()
+        .dst_set(descriptor_set)
+        .dst_binding(binding)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .image_info(std::slice::from_ref(&image_info));
+
+    unsafe {
+        device.update_descriptor_sets(&[descriptor_write], &[]);
+    }
+    Ok(())
+}
+
+
 /// Pool of info about descriptors. It holds metadata, descriptors hold the data.
 ///
 /// This function creates a descriptor pool which serves as a heap for allocating
 /// descriptor sets. The pool must be large enough to accommodate all the descriptor
 /// sets that will be needed during rendering.
-pub fn create_descriptor_pool(
-    logical_device: &ash::Device,
-    max_sets: u32,
-) -> Result<vk::DescriptorPool> {
-    let pool_sizes = &[vk::DescriptorPoolSize {
-        ty: vk::DescriptorType::UNIFORM_BUFFER,
-        descriptor_count: max_sets,
-    }];
-
+pub fn create_descriptor_pool(logical_device: &ash::Device, max_sets: u32, pool_sizes: &[vk::DescriptorPoolSize]) -> Result<vk::DescriptorPool> {
+    
     let create_info = vk::DescriptorPoolCreateInfo::default()
         .max_sets(max_sets)
-        .pool_sizes(pool_sizes);
-
-    unsafe { Ok(logical_device.create_descriptor_pool(&create_info, None)?) }
+        .pool_sizes(&pool_sizes);
+    
+    unsafe{
+        Ok(logical_device.create_descriptor_pool(&create_info, None)?)
+    }
 }

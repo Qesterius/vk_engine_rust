@@ -18,8 +18,8 @@ use super::memory::{find_memory_type, map_and_copy};
 /// * `size` - The size in bytes of the buffer to create
 /// * `usage` - How the buffer will be used (e.g., `vk::BufferUsageFlags::VERTEX_BUFFER`)
 /// * `properties` - Memory flags (e.g., `vk::MemoryPropertyFlags::HOST_VISIBLE` for CPU access).
-pub fn create_buffer(
-    device: &ash::Device,
+pub fn create_buffer( 
+    device: &ash::Device, //swithc to using my device
     physical_device_memory_props: &vk::PhysicalDeviceMemoryProperties,
     size: vk::DeviceSize,
     usage: vk::BufferUsageFlags,

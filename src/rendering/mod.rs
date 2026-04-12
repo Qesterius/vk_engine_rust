@@ -9,3 +9,4 @@ pub mod rendering_instance;
 pub mod rendering_manager;
 pub mod shaders;
 pub mod vertex;
+pub mod image;
