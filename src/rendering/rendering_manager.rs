@@ -83,7 +83,7 @@ impl RenderingManager {
             &device.logical_device,
             canvas.render_pass,
             ubo_descriptor_set_layout,
-            texture_descriptor_set_layout
+            texture_descriptor_set_layout,
         )?;
 
         let frames = allocate_frames(
@@ -245,6 +245,7 @@ impl RenderingManager {
                 }],
             );
 
+            // Set 0: camera UBO — once per frame
             device.cmd_bind_descriptor_sets(
                 cmd,
                 vk::PipelineBindPoint::GRAPHICS,
@@ -266,11 +267,12 @@ impl RenderingManager {
                     utils::any_as_u8_slice(&push),
                 );
                 mesh.bind(device, cmd);
+                // Set 1: this texture's own descriptor set, bound per draw
                 device.cmd_bind_descriptor_sets(
                     cmd,
                     vk::PipelineBindPoint::GRAPHICS,
                     self.pipeline_layout,
-                    1, 
+                    1,
                     &[texture.descriptor_set],
                     &[],
                 );
@@ -394,21 +396,16 @@ fn create_descriptor_resources(
 ) -> Result<(vk::DescriptorSetLayout, vk::DescriptorPool)> {
     let layout = descriptor::DescriptorLayoutBuilder::new()
         .add_binding(
-            0, 
-            vk::DescriptorType::UNIFORM_BUFFER, 
-            vk::ShaderStageFlags::VERTEX
+            0,
+            vk::DescriptorType::UNIFORM_BUFFER,
+            vk::ShaderStageFlags::VERTEX,
         )
         .build(device)?;
-    let pool_sizes = [
-        vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32),
-    ];
-    let pool = descriptor::create_descriptor_pool(
-        device, 
-        MAX_FRAMES_IN_FLIGHT as u32, 
-        &pool_sizes
-    )?;
+    let pool_sizes = [vk::DescriptorPoolSize::default()
+        .ty(vk::DescriptorType::UNIFORM_BUFFER)
+        .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)];
+    let pool =
+        descriptor::create_descriptor_pool(device, MAX_FRAMES_IN_FLIGHT as u32, &pool_sizes)?;
     Ok((layout, pool))
 }
 

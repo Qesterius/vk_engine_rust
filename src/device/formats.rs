@@ -8,12 +8,11 @@ pub const COLOR_FORMAT_CANDIDATES: &[vk::Format] = &[
 ];
 
 // Linear Data (Normal Maps, Roughness, Metalness)
-pub const DATA_FORMAT_CANDIDATES: &[vk::Format] = &[
-    vk::Format::R8G8B8A8_UNORM,
-    vk::Format::B8G8R8A8_UNORM,
-];
+pub const DATA_FORMAT_CANDIDATES: &[vk::Format] =
+    &[vk::Format::R8G8B8A8_UNORM, vk::Format::B8G8R8A8_UNORM];
 
 // High Dynamic Range (HDR) / Skyboxes
+#[allow(dead_code)]
 pub const HDR_FORMAT_CANDIDATES: &[vk::Format] = &[
     vk::Format::R16G16B16A16_SFLOAT,
     vk::Format::R32G32B32A32_SFLOAT,
@@ -29,6 +28,7 @@ pub const DEPTH_FORMAT_CANDIDATES: &[vk::Format] = &[
 
 /// Single-Channel Masks: Best for Font Atlases and Opacity masks.
 /// Saves 75% VRAM compared to using a full RGBA texture.
+#[allow(dead_code)]
 pub const MASK_FORMAT_CANDIDATES: &[vk::Format] = &[
     vk::Format::R8_UNORM,
     vk::Format::R8G8_UNORM, // 2-channel fallback
@@ -36,19 +36,19 @@ pub const MASK_FORMAT_CANDIDATES: &[vk::Format] = &[
 
 /// Compressed Color (BC7): The "Pro" way to store world textures.
 /// Reduces VRAM usage by ~4x with almost no visible quality loss.
+#[allow(dead_code)]
 pub const COMPRESSED_COLOR_CANDIDATES: &[vk::Format] = &[
-    vk::Format::BC7_SRGB_BLOCK, 
+    vk::Format::BC7_SRGB_BLOCK,
     vk::Format::BC3_SRGB_BLOCK, // DXT5 fallback for older hardware
 ];
 
 /// Compressed Data (BC5): Highest quality for Normal maps.
 /// Specifically optimized to store high-precision X and Y vector data.
-pub const COMPRESSED_DATA_CANDIDATES: &[vk::Format] = &[
-    vk::Format::BC5_UNORM_BLOCK,
-    vk::Format::BC7_UNORM_BLOCK,
-];
+#[allow(dead_code)]
+pub const COMPRESSED_DATA_CANDIDATES: &[vk::Format] =
+    &[vk::Format::BC5_UNORM_BLOCK, vk::Format::BC7_UNORM_BLOCK];
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 pub(crate) fn get_supported_format(
     instance: &ash::Instance,
@@ -61,9 +61,8 @@ pub(crate) fn get_supported_format(
         .iter()
         .cloned()
         .find(|&format| {
-            let props = unsafe { 
-                instance.get_physical_device_format_properties(physical_device, format) 
-            };
+            let props =
+                unsafe { instance.get_physical_device_format_properties(physical_device, format) };
 
             match tiling {
                 vk::ImageTiling::LINEAR => props.linear_tiling_features.contains(features),
@@ -71,5 +70,10 @@ pub(crate) fn get_supported_format(
                 _ => false,
             }
         })
-        .ok_or_else(|| anyhow!("Failed to find a supported format among candidates: {:?}", candidates))
+        .ok_or_else(|| {
+            anyhow!(
+                "Failed to find a supported format among candidates: {:?}",
+                candidates
+            )
+        })
 }

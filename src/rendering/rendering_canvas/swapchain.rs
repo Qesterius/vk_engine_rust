@@ -2,7 +2,7 @@ use anyhow::Result;
 use ash::vk;
 use std::sync::Arc;
 
-use crate::{device::device::Device, rendering::image::create_image_view};
+use crate::device::device::Device;
 
 #[derive(Clone)]
 pub struct SwapchainState {

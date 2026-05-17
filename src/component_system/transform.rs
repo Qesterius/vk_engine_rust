@@ -32,13 +32,13 @@ impl Transform {
         self
     }
 
-    /// Sets the absolute position
+    #[allow(dead_code)]
     pub fn set_position(&mut self, position: [f32; 3]) -> &mut Self {
         self.position = position.into();
         self
     }
 
-    /// Rotates the object around its local Y axis (Yaw)
+    #[allow(dead_code)]
     pub fn rotate_y(&mut self, degrees: f32) -> &mut Self {
         use cgmath::Rotation3;
         let rotation = cgmath::Quaternion::from_angle_y(cgmath::Deg(degrees));
@@ -46,7 +46,7 @@ impl Transform {
         self
     }
 
-    /// Scales the object uniformly
+    #[allow(dead_code)]
     pub fn set_scale(&mut self, s: f32) -> &mut Self {
         self.scale = cgmath::Vector3::new(s, s, s);
         self

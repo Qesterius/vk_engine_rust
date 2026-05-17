@@ -1,13 +1,21 @@
-use std::{ collections::HashMap, sync::{ Arc, atomic::Ordering } };
+use anyhow::{Ok, Result};
 use ash::vk;
-use anyhow::{ Result, Ok };
 use bevy_ecs::resource::Resource;
+use std::{
+    collections::HashMap,
+    sync::{Arc, atomic::Ordering},
+};
 
 use crate::{
-    assets::{ loaders, texture::Texture },
+    assets::{loaders, texture::Texture},
     device::device::Device,
-    rendering::{ buffer, descriptor::{ self, DescriptorLayoutBuilder }, memory, image },
+    rendering::{
+        buffer,
+        descriptor::{self, DescriptorLayoutBuilder},
+        image, memory,
+    },
 };
+
 /// Maximum number of textures loaded at once; one descriptor set each.
 const MAX_TEXTURES: u32 = 100;
 
@@ -28,6 +36,7 @@ impl SamplerType {
         }
     }
 }
+
 #[derive(Resource)]
 pub struct AssetManager {
     device: Arc<Device>,
@@ -47,35 +56,36 @@ impl Drop for AssetManager {
                 self.device.logical_device.destroy_sampler(sampler, None);
             }
             // Destroying the pool implicitly frees every texture's descriptor set
-            self.device.logical_device.destroy_descriptor_pool(self.texture_descriptor_pool, None);
-            self.device.logical_device.destroy_descriptor_set_layout(self.texture_descriptor_set_layout, None);
+            self.device
+                .logical_device
+                .destroy_descriptor_pool(self.texture_descriptor_pool, None);
+            self.device
+                .logical_device
+                .destroy_descriptor_set_layout(self.texture_descriptor_set_layout, None);
         }
     }
 }
 
 impl AssetManager {
     pub fn new(device: Arc<Device>) -> Result<Self> {
-        let texture_descriptor_layout = DescriptorLayoutBuilder::new()
+        // One COMBINED_IMAGE_SAMPLER per texture set, bound per draw at set 1
+        let layout = DescriptorLayoutBuilder::new()
             .add_binding(
                 0,
                 vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                vk::ShaderStageFlags::FRAGMENT
+                vk::ShaderStageFlags::FRAGMENT,
             )
             .build(&device.logical_device)?;
 
-        let pool_sizes = [
-            vk::DescriptorPoolSize
-                ::default()
-                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(MAX_TEXTURES),
-        ];
-
+        let pool_sizes = [vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(MAX_TEXTURES)];
         // FREE_DESCRIPTOR_SET: texture sets live until their texture is unloaded
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
             .max_sets(MAX_TEXTURES)
             .pool_sizes(&pool_sizes);
-        let descriptor_pool = unsafe { device.logical_device.create_descriptor_pool(&pool_info, None) }?;
+        let pool = unsafe { device.logical_device.create_descriptor_pool(&pool_info, None) }?;
 
         // Built in SamplerType::index() order
         let samplers = vec![
@@ -85,10 +95,10 @@ impl AssetManager {
         ];
 
         Ok(Self {
-            device: device,
-            texture_descriptor_set_layout: texture_descriptor_layout,
-            texture_descriptor_pool: descriptor_pool,
-            samplers: samplers,
+            device,
+            texture_descriptor_set_layout: layout,
+            texture_descriptor_pool: pool,
+            samplers,
             loaded_textures: HashMap::new(),
         })
     }
@@ -101,70 +111,61 @@ impl AssetManager {
         let img = loaders::image_loader::load(path)?;
         let img_data = img.as_raw();
 
-        //loading image into cpu ram
         let (staging_buffer, staging_memory) = buffer::create_buffer(
             &self.device.logical_device,
             &self.device.memory_properties,
             img_data.len() as vk::DeviceSize,
             vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE
+            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
         )?;
+        unsafe { memory::map_and_copy(&self.device.logical_device, staging_memory, img_data) }?;
 
-        // put image pixels into staging buffer
-        (unsafe { memory::map_and_copy(&self.device.logical_device, staging_memory, img_data) })?;
         let extent = vk::Extent3D {
             width: img.width(),
             height: img.height(),
             depth: 1,
         };
-        // create empty image on gpu
-        let (img_vk, mem_img_vk) = image::create_image(&self.device, extent, self.device.format_color)?;
+        let (img_vk, mem_img_vk) =
+            image::create_image(&self.device, extent, self.device.format_color)?;
 
-        // transition: using pipeline barrier to change image layout to be optimal for receiving data from buffer
         image::transition_image_layout(
             &self.device,
             img_vk,
             self.device.format_color,
             vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
         )?;
-
-        //move staging buffer data to image
         image::copy_buffer_to_image(&self.device, staging_buffer, img_vk, extent)?;
-
-        //transition image layout to be sampled in shader after its loaded
         image::transition_image_layout(
             &self.device,
             img_vk,
             self.device.format_color,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
         )?;
-        
-        // create img view
-        let img_vk_view = image::create_image_view(&self.device, img_vk, self.device.format_color)?;
 
-        // allocate descriptor set for this texture
+        let img_vk_view =
+            image::create_image_view(&self.device, img_vk, self.device.format_color)?;
+
+        // The texture's own set, written once here; no frame uses a new set yet
         let descriptor_set = descriptor::allocate_descriptor_sets(
             &self.device.logical_device,
             self.texture_descriptor_pool,
             self.texture_descriptor_set_layout,
-            1
+            1,
         )?[0];
-
-        // put image and sampler into descriptor set
         descriptor::update_image_descriptor_set(
             &self.device.logical_device,
             descriptor_set,
             img_vk_view,
             self.samplers[sampler_type.index()],
-            0
+            0,
         );
 
         unsafe {
-            self.device.logical_device.destroy_buffer(staging_buffer, None);
-        }
-        unsafe {
+            self.device
+                .logical_device
+                .destroy_buffer(staging_buffer, None);
             self.device.logical_device.free_memory(staging_memory, None);
         }
 
@@ -173,11 +174,12 @@ impl AssetManager {
             img_vk_view,
             mem_img_vk,
             descriptor_set,
-            path.to_string()
+            path.to_string(),
         );
 
         let texture_arc = Arc::new(texture);
-        self.loaded_textures.insert(path.to_string(), Arc::clone(&texture_arc));
+        self.loaded_textures
+            .insert(path.to_string(), Arc::clone(&texture_arc));
         Ok(texture_arc)
     }
 
