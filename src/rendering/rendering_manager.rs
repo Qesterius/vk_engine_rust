@@ -8,7 +8,7 @@ use log::{info, warn};
 
 use std::sync::atomic::Ordering;
 
-use crate::assets::texture::TextureHandle;
+use crate::assets::{asset_manager::AssetManager, texture::TextureHandle};
 use crate::component_system::transform::Transform;
 use crate::config::MAX_FRAMES_IN_FLIGHT;
 use crate::device::device::Device;
@@ -64,7 +64,7 @@ impl RenderingManager {
         surface: vk::SurfaceKHR,
         surface_loader: ash::khr::surface::Instance,
         window_size: winit::dpi::PhysicalSize<u32>,
-        texture_descriptor_set_layout: vk::DescriptorSetLayout,
+        bindless_descriptor_set_layout: vk::DescriptorSetLayout,
     ) -> Result<Self> {
         let canvas = unsafe {
             Canvas::new(
@@ -83,7 +83,7 @@ impl RenderingManager {
             &device.logical_device,
             canvas.render_pass,
             ubo_descriptor_set_layout,
-            texture_descriptor_set_layout
+            bindless_descriptor_set_layout,
         )?;
 
         let frames = allocate_frames(
@@ -133,6 +133,9 @@ impl RenderingManager {
             .store(sync_idx, Ordering::Relaxed);
         // ... flush anything queued for destruction from that previous use.
         self.device.flush_dynamic_deletion_queue(sync_idx);
+        world
+            .resource_mut::<AssetManager>()
+            .flush_pending_reclaims(current_frame);
 
         // Acquire swapchain image
         let image_index = match unsafe {
@@ -245,6 +248,9 @@ impl RenderingManager {
                 }],
             );
 
+            let bindless_set = world.resource::<AssetManager>().bindless_descriptor_set;
+
+            // Set 0: camera UBO — once per frame
             device.cmd_bind_descriptor_sets(
                 cmd,
                 vk::PipelineBindPoint::GRAPHICS,
@@ -253,27 +259,32 @@ impl RenderingManager {
                 &[frame.global_descriptor_set],
                 &[],
             );
+            // Set 1: bindless texture + sampler array — once per frame
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                1,
+                &[bindless_set],
+                &[],
+            );
 
             let mut query = world.query::<(&Mesh, &Transform, &TextureHandle)>();
 
             for (mesh, transform, texture) in query.iter(world) {
-                let push = MeshPushConstants::new(transform.to_matrix());
+                let push = MeshPushConstants::new(
+                    transform.to_matrix(),
+                    texture.index,
+                    texture.sampler_index,
+                );
                 device.cmd_push_constants(
                     cmd,
                     self.pipeline_layout,
-                    vk::ShaderStageFlags::VERTEX,
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                     0,
                     utils::any_as_u8_slice(&push),
                 );
                 mesh.bind(device, cmd);
-                device.cmd_bind_descriptor_sets(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.pipeline_layout,
-                    1, 
-                    &[texture.descriptor_set],
-                    &[],
-                );
                 mesh.draw(device, cmd);
             }
 
@@ -394,21 +405,16 @@ fn create_descriptor_resources(
 ) -> Result<(vk::DescriptorSetLayout, vk::DescriptorPool)> {
     let layout = descriptor::DescriptorLayoutBuilder::new()
         .add_binding(
-            0, 
-            vk::DescriptorType::UNIFORM_BUFFER, 
-            vk::ShaderStageFlags::VERTEX
+            0,
+            vk::DescriptorType::UNIFORM_BUFFER,
+            vk::ShaderStageFlags::VERTEX,
         )
         .build(device)?;
-    let pool_sizes = [
-        vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32),
-    ];
-    let pool = descriptor::create_descriptor_pool(
-        device, 
-        MAX_FRAMES_IN_FLIGHT as u32, 
-        &pool_sizes
-    )?;
+    let pool_sizes = [vk::DescriptorPoolSize::default()
+        .ty(vk::DescriptorType::UNIFORM_BUFFER)
+        .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32)];
+    let pool =
+        descriptor::create_descriptor_pool(device, MAX_FRAMES_IN_FLIGHT as u32, &pool_sizes)?;
     Ok((layout, pool))
 }
 
@@ -420,7 +426,7 @@ fn create_pipeline(
 ) -> Result<(vk::Pipeline, vk::PipelineLayout)> {
     let push_constant_range = vk::PushConstantRange::default()
         .size(std::mem::size_of::<MeshPushConstants>() as u32)
-        .stage_flags(vk::ShaderStageFlags::VERTEX)
+        .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
         .offset(0);
 
     let descriptor_set_layouts = [ubo_descriptor_set_layout, texture_descriptor_set_layout];

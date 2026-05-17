@@ -4,12 +4,11 @@ use std::time::Instant;
 use anyhow::Result;
 use bevy_ecs::{schedule::Schedule, system::Query, world::Mut};
 use cgmath::{Quaternion, Rotation3};
-use image::GenericImageView;
 use winit::window::Window;
 
 use crate::component_system::transform::Transform;
 use crate::{
-    assets::{self, loaders, texture::{self, Texture, TextureHandle}},
+    assets::{self, texture::TextureHandle},
     device::device::Device,
     rendering::{
         components::mesh::Mesh, rendering_instance::RenderingInstance,
@@ -37,6 +36,8 @@ pub struct Engine {
     last_frame: Instant,
 
     pub device: Arc<Device>,
+    // Kept alive for drop order — must outlive Device and all Vulkan objects it created
+    #[allow(dead_code)]
     pub rendering_instance: Arc<RenderingInstance>,
     pub window: Window,
 }
@@ -57,12 +58,16 @@ impl Engine {
         world.insert_resource(WindowEvents::default());
         world.insert_resource(AppExit::default());
 
-        let mut asset_manager = assets::asset_manager::AssetManager
-            ::new(Arc::clone(&device))?;        
+        let mut asset_manager = assets::asset_manager::AssetManager::new(Arc::clone(&device))?;
 
-        let texture = asset_manager.load_texture("assets/textures/CharaWeatherReport.jpg")?;
-        
-
+        let texture_wr = asset_manager.load_texture(
+            "assets/textures/CharaWeatherReport.jpg",
+            assets::asset_manager::SamplerType::LinearRepeat,
+        )?;
+        let texture_l = asset_manager.load_texture(
+            "assets/textures/lucek.png",
+            assets::asset_manager::SamplerType::LinearRepeat,
+        )?;
 
         let renderer = RenderingManager::new(
             Arc::clone(&device),
@@ -70,13 +75,12 @@ impl Engine {
             surface,
             surface_loader,
             window.inner_size(),
-            asset_manager.texture_descriptor_set_layout
+            asset_manager.bindless_descriptor_set_layout,
         )?;
         world.insert_resource(renderer);
         world.insert_resource(asset_manager);
 
-
-        // --- Entities ---        
+        // --- Entities ---
 
         for i in 0..10 {
             let cube = Mesh::new_cube(&device.memory_properties, Arc::clone(&device))?;
@@ -86,7 +90,11 @@ impl Engine {
                 y: (i as f32) % 2.0,
                 z: 6.0,
             });
-            world.spawn((cube, transform, TextureHandle(Arc::clone(&texture))));
+            world.spawn((
+                cube,
+                transform,
+                TextureHandle(Arc::clone(if i % 2 == 0 { &texture_l } else { &texture_wr })),
+            ));
         }
 
         // --- Schedules ---

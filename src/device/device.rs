@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use ash::vk;
 use log::{info, warn};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 
 use crate::config::MAX_FRAMES_IN_FLIGHT;
@@ -15,13 +15,11 @@ use crate::utils;
 
 const DEVICE_EXTENSIONS: &[&std::ffi::CStr] = &[ash::khr::swapchain::NAME];
 
-
-
 /// The `Device` struct acts as the primary interface between the CPU and the GPU.
-/// 
-/// It encapsulates the logical device connection, the hardware properties of the 
-/// physical GPU, and the specific memory/command resources required to submit 
-/// work to the graphics pipeline. It also stores the "optimal" formats detected 
+///
+/// It encapsulates the logical device connection, the hardware properties of the
+/// physical GPU, and the specific memory/command resources required to submit
+/// work to the graphics pipeline. It also stores the "optimal" formats detected
 /// during initialization to ensure consistency across the engine.
 pub struct Device {
     /// The connection to the logical device (the software interface to the GPU).
@@ -51,25 +49,26 @@ pub struct Device {
     pub dynamic_deletion_queues: Vec<Mutex<DeletionQueue>>,
 
     // --- Format Selections ---
-
     /// The preferred Color (sRGB) format.
     /// Used for: Albedo (base color), emissive textures, and UI elements.
-    /// This format includes hardware-level gamma correction. It ensures 
+    /// This format includes hardware-level gamma correction. It ensures
     /// that colors are more precise for darker tones where eyes are more sensitive.
     pub format_color: vk::Format,
 
     /// The preferred Data (Linear/UNORM) format.
     /// Used for: Normal maps, Roughness, Metalness, and Ambient Occlusion.
-    /// Unlike color, "Data" textures represent mathematical vectors 
-    /// or physical properties. This format bypasses gamma correction, ensuring a 
+    /// Unlike color, "Data" textures represent mathematical vectors
+    /// or physical properties. This format bypasses gamma correction, ensuring a
     /// value of 0.5 in the file remains exactly 0.5 in the shader math.
+    #[allow(dead_code)]
     pub format_data: vk::Format,
 
     /// The preferred Depth (Z-Buffer) format.
     /// Used for: The Depth Buffer and Shadow Maps.
-    /// This format is used to track the distance of pixels from the 
-    /// camera. It typically uses high-precision floating point (D32_SFLOAT) to 
+    /// This format is used to track the distance of pixels from the
+    /// camera. It typically uses high-precision floating point (D32_SFLOAT) to
     /// prevent "Z-fighting" (flickering) when two objects are very close together.
+    #[allow(dead_code)]
     pub format_depth: vk::Format,
 }
 
@@ -90,37 +89,39 @@ impl Device {
         let memory_properties =
             unsafe { instance.get_physical_device_memory_properties(physical_device) };
 
-        
         let format_color = formats::get_supported_format(
-            &rendering_instance.instance, 
-            physical_device, 
-            formats::COLOR_FORMAT_CANDIDATES, 
-            vk::ImageTiling::OPTIMAL, 
-            vk::FormatFeatureFlags::SAMPLED_IMAGE)?;
+            &rendering_instance.instance,
+            physical_device,
+            formats::COLOR_FORMAT_CANDIDATES,
+            vk::ImageTiling::OPTIMAL,
+            vk::FormatFeatureFlags::SAMPLED_IMAGE,
+        )?;
 
         let format_depth = formats::get_supported_format(
-            &rendering_instance.instance, 
-            physical_device, 
-            formats::DEPTH_FORMAT_CANDIDATES, 
-            vk::ImageTiling::OPTIMAL, 
-            vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT)?;
-        
+            &rendering_instance.instance,
+            physical_device,
+            formats::DEPTH_FORMAT_CANDIDATES,
+            vk::ImageTiling::OPTIMAL,
+            vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT,
+        )?;
+
         let format_data = formats::get_supported_format(
-            &rendering_instance.instance, 
-            physical_device, 
-            formats::DATA_FORMAT_CANDIDATES, 
-            vk::ImageTiling::OPTIMAL, 
-            vk::FormatFeatureFlags::SAMPLED_IMAGE)?;
+            &rendering_instance.instance,
+            physical_device,
+            formats::DATA_FORMAT_CANDIDATES,
+            vk::ImageTiling::OPTIMAL,
+            vk::FormatFeatureFlags::SAMPLED_IMAGE,
+        )?;
 
         let mut dynamic_deletion_queues = Vec::new();
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            let mut q = Mutex::new(DeletionQueue::new());
+            let q = Mutex::new(DeletionQueue::new());
             q.lock()
                 .unwrap()
                 .push(|| info!("Flushed unused resources from previous frame"));
             dynamic_deletion_queues.push(q);
         }
-        let mut static_deletion_queue = Mutex::new(DeletionQueue::new());
+        let static_deletion_queue = Mutex::new(DeletionQueue::new());
         static_deletion_queue
             .lock()
             .unwrap()
@@ -132,14 +133,14 @@ impl Device {
             &mut static_deletion_queue.lock().unwrap(),
         )?;
 
-        Ok(Arc::new(Self { 
-            logical_device, 
-            physical_device, 
-            memory_properties, 
-            graphics_queue, 
-            present_queue, 
-            queue_family_indices, 
-            command_pool, 
+        Ok(Arc::new(Self {
+            logical_device,
+            physical_device,
+            memory_properties,
+            graphics_queue,
+            present_queue,
+            queue_family_indices,
+            command_pool,
             current_sync_idx: AtomicUsize::new(0),
             static_deletion_queue,
             dynamic_deletion_queues,
@@ -231,11 +232,13 @@ unsafe fn check_physical_device(
     let details =
         unsafe { SwapchainSupportDetails::get(physical_device, surface, surface_loader)? };
     if details.formats.is_empty() || details.present_modes.is_empty() {
-        return Err(anyhow!("GPU supports Swapchain, but has no compatible formats/modes"));
+        return Err(anyhow!(
+            "GPU supports Swapchain, but has no compatible formats/modes"
+        ));
     }
 
     let features = unsafe { instance.get_physical_device_features(physical_device) };
-    if features.sampler_anisotropy != vk::TRUE{
+    if features.sampler_anisotropy != vk::TRUE {
         return Err(anyhow!("GPU doesnt support anisotrophy"));
     }
 
@@ -324,7 +327,8 @@ fn create_logical_device(
     }
 
     let features = vk::PhysicalDeviceFeatures::default()
-        .sampler_anisotropy(true);
+        .sampler_anisotropy(true)
+        .shader_sampled_image_array_dynamic_indexing(true);
     let info = vk::DeviceCreateInfo::default()
         .queue_create_infos(&queue_create_infos)
         .enabled_features(&features)
@@ -365,5 +369,3 @@ fn setup_command_pool(
 
     Ok(command_pool)
 }
-
-

@@ -24,7 +24,11 @@ impl Vertex {
     /// * `color` - The RGB color components [r, g, b]
     /// * `uv` - The UV texture coordinates [u, v]
     pub fn new(position: [f32; 3], color: [f32; 3], uv: [f32; 2]) -> Self {
-        Self { position, color, uv }
+        Self {
+            position,
+            color,
+            uv,
+        }
     }
     /// Returns the vertex input binding description for this vertex structure.
     ///
@@ -43,39 +47,37 @@ impl Vertex {
     /// interpret the vertex data for each shader input attribute.
     pub fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
         let pos = vk::VertexInputAttributeDescription {
-                binding: 0,
-                location: 0,
-                format: vk::Format::R32G32B32_SFLOAT,
-                offset: 0,
-            };
+            binding: 0,
+            location: 0,
+            format: vk::Format::R32G32B32_SFLOAT,
+            offset: 0,
+        };
         let color = vk::VertexInputAttributeDescription {
-                binding: 0,
-                location: 1,
-                format: vk::Format::R32G32B32_SFLOAT,
-                offset: std::mem::size_of::<[f32; 3]>() as u32,
-            };
+            binding: 0,
+            location: 1,
+            format: vk::Format::R32G32B32_SFLOAT,
+            offset: std::mem::size_of::<[f32; 3]>() as u32,
+        };
         let uv = vk::VertexInputAttributeDescription {
-                binding: 0,
-                location: 2,
-                format: vk::Format::R32G32_SFLOAT,
-                offset: (std::mem::size_of::<[f32; 3]>() * 2) as u32,
-            };
-        [
-            pos,
-            color,
-            uv
-        ]
+            binding: 0,
+            location: 2,
+            format: vk::Format::R32G32_SFLOAT,
+            offset: (std::mem::size_of::<[f32; 3]>() * 2) as u32,
+        };
+        [pos, color, uv]
     }
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
 /// Uniform buffer object for passing transformation matrices to the shader.
 ///
 /// This struct holds transformation matrices (model, view, and projection) that
 /// are passed to the shader as a uniform buffer. These matrices define how the
 /// 3D object should be transformed in the scene. The uniform buffer is consistent
 /// across all vertices in a draw call but can be updated between draw calls.
+/// view - the camera's view matrix, which defines the camera's position and orientation in the scene
+/// proj - the camera's projection matrix, which defines how 3D coordinates are projected onto the 2D screen. example: perspective or orthographic projection
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
 pub struct UniformBufferObject {
     pub view: cgmath::Matrix4<f32>,
     pub proj: cgmath::Matrix4<f32>,
@@ -90,12 +92,22 @@ pub struct UniformBufferObject {
 /// We use this specifically for per-object data (like the Model Matrix) because it
 /// allows us to "push" a unique position/rotation for every draw call without
 /// the CPU and GPU fighting over the same piece of UBO memory.
+/// model - the transformation matrix for the object being drawn
+/// texture_index - the index of the texture to use for this object
+/// sampler_index - the index of the sampler to use for this object
 #[repr(C)]
 pub struct MeshPushConstants {
     pub model: Matrix4<f32>,
+    pub texture_index: u32,
+    pub sampler_index: u32,
 }
+
 impl MeshPushConstants {
-    pub fn new(model: cgmath::Matrix4<f32>) -> Self {
-        Self { model }
+    pub fn new(model: cgmath::Matrix4<f32>, texture_index: u32, sampler_index: u32) -> Self {
+        Self {
+            model,
+            texture_index,
+            sampler_index,
+        }
     }
 }

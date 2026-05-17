@@ -9,6 +9,7 @@ pub struct DescriptorBindingInfo {
     binding: u32,
     descriptor_type: vk::DescriptorType,
     stage_flags: vk::ShaderStageFlags,
+    count: u32,
 }
 
 // Builder for creating descriptor set layouts
@@ -39,17 +40,27 @@ impl DescriptorLayoutBuilder {
     /// * `descriptor_type` - The type of resource (e.g., `UNIFORM_BUFFER`, `COMBINED_IMAGE_SAMPLER`).
     /// * `stage_flags` - Which shader stages can access this resource (e.g., `VERTEX`, `FRAGMENT`).
     pub fn add_binding(
+        self,
+        binding: u32,
+        descriptor_type: vk::DescriptorType,
+        stage_flags: vk::ShaderStageFlags,
+    ) -> Self {
+        self.add_binding_array(binding, descriptor_type, stage_flags, 1)
+    }
+
+    pub fn add_binding_array(
         mut self,
         binding: u32,
         descriptor_type: vk::DescriptorType,
         stage_flags: vk::ShaderStageFlags,
+        count: u32,
     ) -> Self {
         self.bindings.push(DescriptorBindingInfo {
             binding,
             descriptor_type,
             stage_flags,
+            count,
         });
-
         self
     }
 
@@ -65,7 +76,7 @@ impl DescriptorLayoutBuilder {
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(b.binding)
                     .descriptor_type(b.descriptor_type)
-                    .descriptor_count(1)
+                    .descriptor_count(b.count)
                     .stage_flags(b.stage_flags)
             })
             .collect();
@@ -137,48 +148,62 @@ pub fn update_buffer_descriptor_set(
 }
 
 
-/// Updates a buffer descriptor set with a new buffer.
-/// 
-/// This function updates a descriptor set to point to a new buffer resource.
-/// It's commonly used to update uniform buffers or other buffer-based resources
-/// that may change between frames.
-pub fn update_image_descriptor_set(
+/// Writes a single SAMPLED_IMAGE into one slot of an array binding.
+/// Used to populate or update individual slots in the bindless texture array.
+pub fn update_sampled_image_slot(
     device: &ash::Device,
     descriptor_set: vk::DescriptorSet,
-    image_view : vk::ImageView,
-    sampler : vk::Sampler,
+    image_view: vk::ImageView,
+    array_element: u32,
     binding: u32,
-)  -> Result<()> {
+) {
     let image_info = vk::DescriptorImageInfo::default()
         .image_view(image_view)
-        .sampler(sampler)
         .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
 
-    let descriptor_write = vk::WriteDescriptorSet::default()
+    let write = vk::WriteDescriptorSet::default()
         .dst_set(descriptor_set)
         .dst_binding(binding)
-        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .dst_array_element(array_element)
+        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
         .image_info(std::slice::from_ref(&image_info));
 
-    unsafe {
-        device.update_descriptor_sets(&[descriptor_write], &[]);
-    }
-    Ok(())
+    unsafe { device.update_descriptor_sets(&[write], &[]) };
 }
 
+/// Writes a single SAMPLER into one slot of a sampler array binding.
+pub fn update_sampler_slot(
+    device: &ash::Device,
+    descriptor_set: vk::DescriptorSet,
+    sampler: vk::Sampler,
+    array_element: u32,
+    binding: u32,
+) {
+    let image_info = vk::DescriptorImageInfo::default().sampler(sampler);
+
+    let write = vk::WriteDescriptorSet::default()
+        .dst_set(descriptor_set)
+        .dst_binding(binding)
+        .dst_array_element(array_element)
+        .descriptor_type(vk::DescriptorType::SAMPLER)
+        .image_info(std::slice::from_ref(&image_info));
+
+    unsafe { device.update_descriptor_sets(&[write], &[]) };
+}
 
 /// Pool of info about descriptors. It holds metadata, descriptors hold the data.
 ///
 /// This function creates a descriptor pool which serves as a heap for allocating
 /// descriptor sets. The pool must be large enough to accommodate all the descriptor
 /// sets that will be needed during rendering.
-pub fn create_descriptor_pool(logical_device: &ash::Device, max_sets: u32, pool_sizes: &[vk::DescriptorPoolSize]) -> Result<vk::DescriptorPool> {
-    
+pub fn create_descriptor_pool(
+    logical_device: &ash::Device,
+    max_sets: u32,
+    pool_sizes: &[vk::DescriptorPoolSize],
+) -> Result<vk::DescriptorPool> {
     let create_info = vk::DescriptorPoolCreateInfo::default()
         .max_sets(max_sets)
         .pool_sizes(&pool_sizes);
-    
-    unsafe{
-        Ok(logical_device.create_descriptor_pool(&create_info, None)?)
-    }
+
+    unsafe { Ok(logical_device.create_descriptor_pool(&create_info, None)?) }
 }
