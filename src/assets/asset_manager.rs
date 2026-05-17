@@ -1,4 +1,4 @@
-use std::{ collections::HashMap, sync::Arc };
+use std::{ collections::HashMap, sync::{ Arc, atomic::Ordering } };
 use ash::vk;
 use anyhow::{ Result, Ok };
 use bevy_ecs::resource::Resource;
@@ -8,19 +8,32 @@ use crate::{
     device::device::Device,
     rendering::{ buffer, descriptor::{ self, DescriptorLayoutBuilder }, memory, image },
 };
-#[derive(Hash, Eq, PartialEq)]
+/// Maximum number of textures loaded at once; one descriptor set each.
+const MAX_TEXTURES: u32 = 100;
+
+#[derive(Hash, Eq, PartialEq, Clone, Copy)]
+#[allow(dead_code)]
 pub enum SamplerType {
-    SAMPLER_LINEAR_REPEAT,
-    //SAMPLER_NEAREST_REPEAT,
-    //SAMPLER_LINEAR_CLAMP,
-    //SAMPLER_NEAREST_CLAMP
+    LinearRepeat,
+    LinearClamp,
+    NearestClamp,
+}
+
+impl SamplerType {
+    pub fn index(self) -> usize {
+        match self {
+            SamplerType::LinearRepeat => 0,
+            SamplerType::LinearClamp => 1,
+            SamplerType::NearestClamp => 2,
+        }
+    }
 }
 #[derive(Resource)]
 pub struct AssetManager {
     device: Arc<Device>,
     pub texture_descriptor_set_layout: vk::DescriptorSetLayout,
     pub texture_descriptor_pool: vk::DescriptorPool,
-    pub samplers: HashMap<SamplerType, vk::Sampler>,
+    samplers: Vec<vk::Sampler>,
     pub loaded_textures: HashMap<String, Arc<Texture>>,
 }
 
@@ -30,9 +43,10 @@ impl Drop for AssetManager {
             texture.destroy(&self.device);
         }
         unsafe {
-            for sampler in self.samplers.values() {
-                self.device.logical_device.destroy_sampler(*sampler, None);
+            for &sampler in &self.samplers {
+                self.device.logical_device.destroy_sampler(sampler, None);
             }
+            // Destroying the pool implicitly frees every texture's descriptor set
             self.device.logical_device.destroy_descriptor_pool(self.texture_descriptor_pool, None);
             self.device.logical_device.destroy_descriptor_set_layout(self.texture_descriptor_set_layout, None);
         }
@@ -53,18 +67,22 @@ impl AssetManager {
             vk::DescriptorPoolSize
                 ::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(100),
+                .descriptor_count(MAX_TEXTURES),
         ];
 
-        let descriptor_pool = descriptor::create_descriptor_pool(
-            &device.logical_device,
-            100,
-            &pool_sizes
-        )?;
+        // FREE_DESCRIPTOR_SET: texture sets live until their texture is unloaded
+        let pool_info = vk::DescriptorPoolCreateInfo::default()
+            .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
+            .max_sets(MAX_TEXTURES)
+            .pool_sizes(&pool_sizes);
+        let descriptor_pool = unsafe { device.logical_device.create_descriptor_pool(&pool_info, None) }?;
 
-        let linear_sampler = crate::rendering::image::create_texture_sampler(&device)?;
-        let mut samplers = HashMap::new();
-        samplers.insert(SamplerType::SAMPLER_LINEAR_REPEAT, linear_sampler);
+        // Built in SamplerType::index() order
+        let samplers = vec![
+            image::create_texture_sampler(&device)?,       // 0: LinearRepeat
+            image::create_sampler_linear_clamp(&device)?,  // 1: LinearClamp
+            image::create_sampler_nearest_clamp(&device)?, // 2: NearestClamp
+        ];
 
         Ok(Self {
             device: device,
@@ -75,14 +93,13 @@ impl AssetManager {
         })
     }
 
-    pub fn load_texture(&mut self, path: &str) -> Result<Arc<Texture>> {
+    pub fn load_texture(&mut self, path: &str, sampler_type: SamplerType) -> Result<Arc<Texture>> {
         if let Some(texture) = self.loaded_textures.get(path) {
             return Ok(Arc::clone(texture));
         }
 
         let img = loaders::image_loader::load(path)?;
         let img_data = img.as_raw();
-        let sampler = self.samplers.get(&SamplerType::SAMPLER_LINEAR_REPEAT).unwrap();
 
         //loading image into cpu ram
         let (staging_buffer, staging_memory) = buffer::create_buffer(
@@ -140,9 +157,9 @@ impl AssetManager {
             &self.device.logical_device,
             descriptor_set,
             img_vk_view,
-            *sampler,
+            self.samplers[sampler_type.index()],
             0
-        )?;
+        );
 
         unsafe {
             self.device.logical_device.destroy_buffer(staging_buffer, None);
@@ -152,7 +169,6 @@ impl AssetManager {
         }
 
         let texture = Texture::new(
-            &self.device,
             img_vk,
             img_vk_view,
             mem_img_vk,
@@ -163,5 +179,36 @@ impl AssetManager {
         let texture_arc = Arc::new(texture);
         self.loaded_textures.insert(path.to_string(), Arc::clone(&texture_arc));
         Ok(texture_arc)
+    }
+
+    /// Unloads a texture. Frames still in flight may have its descriptor set bound, so the
+    /// set and the GPU resources (view, image, memory) are freed only once the newest
+    /// submitted frame, the last one that can use them, has finished.
+    #[allow(dead_code)]
+    pub fn unload_texture(&mut self, path: &str) {
+        let Some(texture) = self.loaded_textures.remove(path) else {
+            return;
+        };
+
+        let device = Arc::clone(&self.device);
+        let pool = self.texture_descriptor_pool;
+        let descriptor_set = texture.descriptor_set;
+        let image = texture.image;
+        let image_view = texture.image_view;
+        let memory = texture.memory;
+        // The newest submitted frame's queue is flushed only after its fence is waited on
+        let queue_idx = self.device.current_sync_idx.load(Ordering::Relaxed);
+        self.device.dynamic_deletion_queues[queue_idx]
+            .lock()
+            .unwrap()
+            .push(move || unsafe {
+                // The pool has FREE_DESCRIPTOR_SET, so freeing cannot fail
+                let _ = device
+                    .logical_device
+                    .free_descriptor_sets(pool, &[descriptor_set]);
+                device.logical_device.destroy_image_view(image_view, None);
+                device.logical_device.destroy_image(image, None);
+                device.logical_device.free_memory(memory, None);
+            });
     }
 }

@@ -28,8 +28,14 @@ fn main() -> Result<()> {
         let source = fs::read_to_string(&path)?;
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap();
 
+        let mut options = shaderc::CompileOptions::new().expect("Failed to create compile options");
+        options.set_target_env(
+            shaderc::TargetEnv::Vulkan,
+            shaderc::EnvVersion::Vulkan1_0 as u32,
+        ); // default is opengl which does not support descriptor binding of sampler and texture seperately
+
         let binary_result =
-            compiler.compile_into_spirv(&source, shader_kind, file_name, "main", None)?;
+            compiler.compile_into_spirv(&source, shader_kind, file_name, "main", Some(&options))?;
 
         let spv_name = format!("{}.spv", extension.unwrap());
         let output_path = path.parent().unwrap().join(spv_name);

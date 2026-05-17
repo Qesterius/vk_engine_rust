@@ -29,7 +29,7 @@ impl Texture{
             device.logical_device.free_memory(self.memory, None);
         }
     }
-    pub fn new(device: &Device, image: vk::Image, image_view: vk::ImageView, memory: vk::DeviceMemory, descriptor_set: vk::DescriptorSet, path: String) -> Self{
+    pub fn new(image: vk::Image, image_view: vk::ImageView, memory: vk::DeviceMemory, descriptor_set: vk::DescriptorSet, path: String) -> Self{
         Self{
             image,
             image_view,

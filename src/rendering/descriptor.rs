@@ -148,7 +148,7 @@ pub fn update_image_descriptor_set(
     image_view : vk::ImageView,
     sampler : vk::Sampler,
     binding: u32,
-)  -> Result<()> {
+) {
     let image_info = vk::DescriptorImageInfo::default()
         .image_view(image_view)
         .sampler(sampler)
@@ -163,7 +163,6 @@ pub fn update_image_descriptor_set(
     unsafe {
         device.update_descriptor_sets(&[descriptor_write], &[]);
     }
-    Ok(())
 }
 
 

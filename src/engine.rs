@@ -60,7 +60,14 @@ impl Engine {
         let mut asset_manager = assets::asset_manager::AssetManager
             ::new(Arc::clone(&device))?;        
 
-        let texture = asset_manager.load_texture("assets/textures/CharaWeatherReport.jpg")?;
+        let texture_wr = asset_manager.load_texture(
+            "assets/textures/CharaWeatherReport.jpg",
+            assets::asset_manager::SamplerType::LinearRepeat,
+        )?;
+        let texture_l = asset_manager.load_texture(
+            "assets/textures/lucek.png",
+            assets::asset_manager::SamplerType::LinearRepeat,
+        )?;
         
 
 
@@ -86,7 +93,11 @@ impl Engine {
                 y: (i as f32) % 2.0,
                 z: 6.0,
             });
-            world.spawn((cube, transform, TextureHandle(Arc::clone(&texture))));
+            world.spawn((
+                cube,
+                transform,
+                TextureHandle(Arc::clone(if i % 2 == 0 { &texture_l } else { &texture_wr })),
+            ));
         }
 
         // --- Schedules ---
