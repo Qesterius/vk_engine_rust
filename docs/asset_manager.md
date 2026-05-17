@@ -122,6 +122,14 @@ Descriptor sets are bound independently per set index. Fixing set assignments en
 
 The placeholder image (1×1 RGBA8) is allocated once at `AssetManager` init and lives for the process lifetime. Each loaded texture allocates a `vk::DeviceMemory` owned by `Texture` and freed in `AssetManager::drop`. The staging buffer used during upload is allocated and freed within each `load_texture` call — it does not persist.
 
+### Unload Lifecycle
+
+`unload_texture` is currently implemented but not called at runtime. There is no mid-game unloading in use. The expected caller is a future scene system that unloads assets when a scene is torn down — not individual entities.
+
+Automatic unloading via `Drop` is not straightforward: `Texture` would need to call back into `AssetManager` (to write the placeholder and reclaim the slot), but `AssetManager` owns the `Arc<Texture>`. A drop-based design would require either a separate cleanup-context `Arc` (new pattern, inconsistent with the rest of the codebase) or a `Weak<Mutex<AssetManager>>` back-reference. Neither is warranted until a scene system exists and real unload semantics are defined.
+
+One viable future design: a time-to-live field on the texture tracking idle frames. When only the `AssetManager`'s own `Arc` remains (no entity holds a reference) and the TTL expires, the asset manager unloads it during its periodic flush. This makes unloading demand-driven without requiring Drop callbacks.
+
 ### CPU/GPU Sync
 
 Texture upload uses single-time command buffers (`begin_single_time_commands` / `end_single_time_commands`) that submit and wait for completion synchronously. No explicit barrier is needed between upload and first use because the wait-idle on submission guarantees visibility. Partial descriptor updates (`vkUpdateDescriptorSets`) are safe to issue while the set is bound to an in-flight frame only if the slot being written is not accessed by that frame — guaranteed for loads because new slots are written before the frame that first uses them.

@@ -1,3 +1,4 @@
+mod assets;
 mod component_system;
 mod config;
 mod device;
@@ -6,7 +7,6 @@ mod rendering;
 mod time;
 mod utils;
 mod window_events;
-mod assets;
 
 use crate::config::APPLICATION_TITLE;
 use crate::engine::Engine;

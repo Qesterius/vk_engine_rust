@@ -1,4 +1,4 @@
-pub mod device;
-pub mod memory;
 pub mod commands;
+pub mod device;
 pub mod formats;
+pub mod memory;

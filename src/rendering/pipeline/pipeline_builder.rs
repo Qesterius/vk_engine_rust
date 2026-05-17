@@ -19,6 +19,7 @@ pub struct PipelineBuilder {
     depth_write_enabled: bool,
     depth_compare_op: CompareOp,
 }
+#[allow(dead_code)]
 impl PipelineBuilder {
     /// Creates a new PipelineBuilder with the specified pipeline layout.
     ///
