@@ -275,19 +275,36 @@ unsafe fn pick_physical_device(
     surface_loader: &ash::khr::surface::Instance,
 ) -> Result<(vk::PhysicalDevice, QueueFamilyIndices)> {
     let physical_devices = unsafe { instance.enumerate_physical_devices()? };
+    let mut best: Option<(vk::PhysicalDevice, QueueFamilyIndices, u32)> = None;
     for &physical_device in physical_devices.iter() {
         let properties = unsafe { instance.get_physical_device_properties(physical_device) };
         let name = utils::vk_to_cstr(&properties.device_name);
 
         match unsafe { check_physical_device(instance, physical_device, surface, surface_loader) } {
             Ok(indices) => {
-                info!("Selected GPU: {:?}", name);
-                return Ok((physical_device, indices));
+                let score = match properties.device_type {
+                    vk::PhysicalDeviceType::DISCRETE_GPU => 1000,
+                    vk::PhysicalDeviceType::INTEGRATED_GPU => 500,
+                    _ => 0,
+                } + properties.limits.max_per_stage_resources as u32 / 100; 
+                if best.is_none() || score > best.unwrap().2 {
+                    best = Some((physical_device, indices, score));
+                }
+                info!("Considered GPU: {:?}", name);
             }
             Err(e) => {
                 warn!("Skipping GPU {:?}: {}", name, e);
             }
         }
+    }
+    if let Some((device, indices, _)) = best {
+        let properties = unsafe { instance.get_physical_device_properties(device) };
+        info!(
+            "Selected GPU: {:?} (type: {:?})",
+            utils::vk_to_cstr(&properties.device_name),
+            properties.device_type
+        );
+        return Ok((device, indices));
     }
     Err(anyhow!("Failed to pick any suitable device!"))
 }
