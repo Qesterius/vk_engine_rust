@@ -70,6 +70,10 @@ pub struct Device {
     /// prevent "Z-fighting" (flickering) when two objects are very close together.
     #[allow(dead_code)]
     pub format_depth: vk::Format,
+
+    /// Maximum bindless texture slots this device supports.
+    /// Capped at 4096; derived from the minimum of per-stage and per-set sampled image limits.
+    pub max_texture_slots: u32,
 }
 
 impl Device {
@@ -88,6 +92,16 @@ impl Device {
 
         let memory_properties =
             unsafe { instance.get_physical_device_memory_properties(physical_device) };
+
+        let phys_props = unsafe { instance.get_physical_device_properties(physical_device) };
+        // Capped at 1024 to match the hardcoded array size in shader.frag.
+        // To raise this limit, enable VK_EXT_descriptor_indexing and switch the shader to a runtime array.
+        let max_texture_slots = phys_props
+            .limits
+            .max_per_stage_descriptor_sampled_images
+            .min(phys_props.limits.max_descriptor_set_sampled_images)
+            .min(1024);
+        info!("Texture slot capacity: {}", max_texture_slots);
 
         let format_color = formats::get_supported_format(
             &rendering_instance.instance,
@@ -147,6 +161,7 @@ impl Device {
             format_color,
             format_data,
             format_depth,
+            max_texture_slots,
         }))
     }
     pub fn flush_dynamic_deletion_queue(&self, frame_index: usize) {
@@ -275,19 +290,36 @@ unsafe fn pick_physical_device(
     surface_loader: &ash::khr::surface::Instance,
 ) -> Result<(vk::PhysicalDevice, QueueFamilyIndices)> {
     let physical_devices = unsafe { instance.enumerate_physical_devices()? };
+    let mut best: Option<(vk::PhysicalDevice, QueueFamilyIndices, u32)> = None;
     for &physical_device in physical_devices.iter() {
         let properties = unsafe { instance.get_physical_device_properties(physical_device) };
         let name = utils::vk_to_cstr(&properties.device_name);
 
         match unsafe { check_physical_device(instance, physical_device, surface, surface_loader) } {
             Ok(indices) => {
-                info!("Selected GPU: {:?}", name);
-                return Ok((physical_device, indices));
+                let score = match properties.device_type {
+                    vk::PhysicalDeviceType::DISCRETE_GPU => 1000,
+                    vk::PhysicalDeviceType::INTEGRATED_GPU => 500,
+                    _ => 0,
+                } + properties.limits.max_per_stage_resources as u32 / 100; 
+                if best.is_none() || score > best.unwrap().2 {
+                    best = Some((physical_device, indices, score));
+                }
+                info!("Considered GPU: {:?}", name);
             }
             Err(e) => {
                 warn!("Skipping GPU {:?}: {}", name, e);
             }
         }
+    }
+    if let Some((device, indices, _)) = best {
+        let properties = unsafe { instance.get_physical_device_properties(device) };
+        info!(
+            "Selected GPU: {:?} (type: {:?})",
+            utils::vk_to_cstr(&properties.device_name),
+            properties.device_type
+        );
+        return Ok((device, indices));
     }
     Err(anyhow!("Failed to pick any suitable device!"))
 }

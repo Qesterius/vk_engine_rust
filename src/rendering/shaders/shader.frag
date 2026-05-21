@@ -1,7 +1,7 @@
 #version 450
 
 // Bindless texture and sampler arrays — bound once per frame, set 1.
-// Array sizes must match MAX_TEXTURES and N_SAMPLERS
+// Array sizes are compile-time constants. 1024 must be less than Device::max_texture_slots cap in device.rs.
 // texture2D + sampler are kept separate so any image can be sampled with any sampler at draw time.
 layout(set = 1, binding = 0) uniform texture2D textures[1024];
 layout(set = 1, binding = 1) uniform sampler samplers[3];

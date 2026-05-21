@@ -30,7 +30,7 @@ Vulkan 1.0 supports dynamic indexing of image arrays via the core feature `shade
 
 ### Texture Array
 
-`VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE` array at set 1, binding 0. Fixed capacity `MAX_TEXTURES = 1024`, declared at layout creation time.
+`VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE` array at set 1, binding 0. Capacity is determined at startup from `Device::max_texture_slots`, which takes the minimum of the physical device's `maxPerStageDescriptorSampledImages`, `maxDescriptorSetSampledImages`, and a hard engine cap of 1024. The 1024 cap exists because the GLSL shader declares `textures[1024]` as a compile-time constant — the Rust cap and shader array size must match. The chosen capacity is logged at startup.
 
 All slots are pre-filled at init with a 1×1 white `RGBA8` placeholder image, keeping every slot valid without requiring the `PARTIALLY_BOUND` flag from `VK_EXT_descriptor_indexing`. All slot indices are pre-populated into a `free_slots: Vec<u32>`. `load_texture` pops a slot; `unload_texture` returns it via deferred reclaim. Each write uses `vkUpdateDescriptorSets` with `dstArrayElement = slot` — a partial update that touches only one array entry.
 
@@ -42,7 +42,7 @@ All slots are pre-filled at init with a 1×1 white `RGBA8` placeholder image, ke
 | Texture atlas | Zero descriptor switching | Non-trivial packing; mip generation complexity; sparse memory waste |
 | Bindless array *(used)* | Bind once per frame; no extensions needed for uniform indexing | Array size fixed at layout creation; variable-count requires `VK_EXT_descriptor_indexing` |
 
-**Limitations:** the array size is fixed at layout creation time. Exceeding `MAX_TEXTURES` is a hard error. For variable-size arrays, `VK_EXT_descriptor_indexing` with `VARIABLE_DESCRIPTOR_COUNT` would be needed.
+**Limitations:** the array size is fixed at layout creation time. On the Rust side the capacity is now read from the device at startup. On the GLSL side the array size remains a compile-time literal (`textures[1024]`) — changing it requires editing the shader and keeping the Rust cap in sync manually. Exceeding the active slot count is a hard error with no eviction. To remove the 1024 ceiling and support true per-device sizing, `VK_EXT_descriptor_indexing` with `VARIABLE_DESCRIPTOR_COUNT` and a GLSL runtime array (`texture2D textures[]`) is required.
 
 ---
 
@@ -74,7 +74,7 @@ Shadow map samplers (`compareEnable = true`, `compareOp = LESS`) are a distinct 
 | `COMBINED_IMAGE_SAMPLER` per texture | Texture carries its own sampler | Cannot resample the same image differently per pass; OpenGL-style |
 | Separate image array + sampler array *(used)* | Any image × any sampler at draw time; pass-agnostic | Requires Vulkan GLSL mode; two bindings instead of one |
 
-**Limitations:** sampler array size (`N_SAMPLERS = 3`) and texture array size (`MAX_TEXTURES = 1024`) are declared as integer literals in the shader source. There is no compile-time link to the Rust constants — changing either requires manual shader update.
+**Limitations:** sampler array size (`N_SAMPLERS = 3`) and texture array size (`textures[1024]`) are declared as integer literals in the shader source. There is no compile-time link to the Rust side — changing either requires a manual shader update and keeping `Device::max_texture_slots` cap in sync.
 
 ---
 
@@ -128,7 +128,7 @@ The placeholder image (1×1 RGBA8) is allocated once at `AssetManager` init and 
 
 Automatic unloading via `Drop` is not straightforward: `Texture` would need to call back into `AssetManager` (to write the placeholder and reclaim the slot), but `AssetManager` owns the `Arc<Texture>`. A drop-based design would require either a separate cleanup-context `Arc` (new pattern, inconsistent with the rest of the codebase) or a `Weak<Mutex<AssetManager>>` back-reference. Neither is warranted until a scene system exists and real unload semantics are defined.
 
-One viable future design: a time-to-live field on the texture tracking idle frames. When only the `AssetManager`'s own `Arc` remains (no entity holds a reference) and the TTL expires, the asset manager unloads it during its periodic flush. This makes unloading demand-driven without requiring Drop callbacks.
+Planned eviction design: track `last_used_frame: u64` per loaded texture, updated each frame any entity holds a reference. When `load_texture` cannot allocate a slot (pool full), evict the texture with the oldest `last_used_frame` rather than returning an error. To avoid a race between freeing and reusing a slot within the same frame, eviction must funnel through the same deferred reclaim path as `unload_texture` — meaning an eviction may not free a slot immediately. A pending-load queue serialises this: load requests that arrive when the pool is full are enqueued and retried once reclaims flush, rather than failing outright. This design requires careful ordering: reclaims flush first, then load attempts drain the queue, within a single `flush_pending_reclaims` call per frame.
 
 ### CPU/GPU Sync
 
@@ -142,7 +142,7 @@ On unload, the placeholder is written back to the descriptor slot immediately (s
 
 ### Performance
 
-Descriptor binding cost is eliminated per draw — both sets are bound once at frame start. The dominant per-draw cost is one `vkCmdPushConstants` call (72 bytes). Pre-filling 1024 descriptor slots at init costs 1024 `vkUpdateDescriptorSets` calls at startup; this is a one-time cost.
+Descriptor binding cost is eliminated per draw — both sets are bound once at frame start. The dominant per-draw cost is one `vkCmdPushConstants` call (72 bytes). Pre-filling `max_texture_slots` descriptor slots at init costs that many `vkUpdateDescriptorSets` calls at startup; this is a one-time cost.
 
 ---
 

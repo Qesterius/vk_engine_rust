@@ -14,7 +14,6 @@ use crate::{
     },
 };
 
-pub const MAX_TEXTURES: u32 = 1024;
 // Binding indices within set 1
 const TEXTURES_BINDING: u32 = 0;
 const SAMPLERS_BINDING: u32 = 1;
@@ -86,13 +85,15 @@ impl Drop for AssetManager {
 
 impl AssetManager {
     pub fn new(device: Arc<Device>) -> Result<Self> {
+        let max_textures = device.max_texture_slots;
+
         // Layout: binding 0 = SAMPLED_IMAGE array, binding 1 = SAMPLER array
         let layout = DescriptorLayoutBuilder::new()
             .add_binding_array(
                 TEXTURES_BINDING,
                 vk::DescriptorType::SAMPLED_IMAGE,
                 vk::ShaderStageFlags::FRAGMENT,
-                MAX_TEXTURES,
+                max_textures,
             )
             .add_binding_array(
                 SAMPLERS_BINDING,
@@ -105,7 +106,7 @@ impl AssetManager {
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::SAMPLED_IMAGE)
-                .descriptor_count(MAX_TEXTURES),
+                .descriptor_count(max_textures),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::SAMPLER)
                 .descriptor_count(N_SAMPLERS),
@@ -178,7 +179,7 @@ impl AssetManager {
         }
 
         // Pre-fill all image slots with the placeholder
-        for i in 0..MAX_TEXTURES {
+        for i in 0..max_textures {
             descriptor::update_sampled_image_slot(
                 &device.logical_device,
                 bindless_set,
@@ -195,7 +196,7 @@ impl AssetManager {
             bindless_descriptor_set: bindless_set,
             samplers,
             loaded_textures: HashMap::new(),
-            slots: SlotAllocator::new(MAX_TEXTURES),
+            slots: SlotAllocator::new(max_textures),
             placeholder_image,
             placeholder_image_view,
             placeholder_memory,
@@ -216,7 +217,7 @@ impl AssetManager {
         let slot = self
             .slots
             .alloc()
-            .ok_or_else(|| anyhow!("Bindless texture array is full ({} slots)", MAX_TEXTURES))?;
+            .ok_or_else(|| anyhow!("Bindless texture array is full ({} slots)", self.device.max_texture_slots))?;
 
         let img = loaders::image_loader::load(path)?;
         let img_data = img.as_raw();
