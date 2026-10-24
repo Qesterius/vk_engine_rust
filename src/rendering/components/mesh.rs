@@ -37,37 +37,38 @@ impl Mesh {
         device: Arc<Device>,
     ) -> Result<Self> {
         let w = [1.0, 1.0, 1.0];
+        // UV origin is the top-left of the image (v = 0 is the first row), matching Vulkan and glTF.
         let vertices = [
             // Front face (+Z)
-            Vertex::new([-0.5, -0.5, 0.5], w, [0.0, 0.0]),
-            Vertex::new([0.5, -0.5, 0.5], w, [1.0, 0.0]),
-            Vertex::new([0.5, 0.5, 0.5], w, [1.0, 1.0]),
-            Vertex::new([-0.5, 0.5, 0.5], w, [0.0, 1.0]),
-            // Back face (-Z)
-            Vertex::new([0.5, -0.5, -0.5], w, [0.0, 0.0]),
-            Vertex::new([-0.5, -0.5, -0.5], w, [1.0, 0.0]),
-            Vertex::new([-0.5, 0.5, -0.5], w, [1.0, 1.0]),
-            Vertex::new([0.5, 0.5, -0.5], w, [0.0, 1.0]),
-            // Right face (+X)
-            Vertex::new([0.5, -0.5, 0.5], w, [0.0, 0.0]),
-            Vertex::new([0.5, -0.5, -0.5], w, [1.0, 0.0]),
-            Vertex::new([0.5, 0.5, -0.5], w, [1.0, 1.0]),
-            Vertex::new([0.5, 0.5, 0.5], w, [0.0, 1.0]),
-            // Left face (-X)
-            Vertex::new([-0.5, -0.5, -0.5], w, [0.0, 0.0]),
-            Vertex::new([-0.5, -0.5, 0.5], w, [1.0, 0.0]),
-            Vertex::new([-0.5, 0.5, 0.5], w, [1.0, 1.0]),
-            Vertex::new([-0.5, 0.5, -0.5], w, [0.0, 1.0]),
-            // Top face (+Y)
-            Vertex::new([-0.5, 0.5, 0.5], w, [0.0, 0.0]),
-            Vertex::new([0.5, 0.5, 0.5], w, [1.0, 0.0]),
-            Vertex::new([0.5, 0.5, -0.5], w, [1.0, 1.0]),
-            Vertex::new([-0.5, 0.5, -0.5], w, [0.0, 1.0]),
-            // Bottom face (-Y)
-            Vertex::new([-0.5, -0.5, -0.5], w, [0.0, 0.0]),
-            Vertex::new([0.5, -0.5, -0.5], w, [1.0, 0.0]),
-            Vertex::new([0.5, -0.5, 0.5], w, [1.0, 1.0]),
             Vertex::new([-0.5, -0.5, 0.5], w, [0.0, 1.0]),
+            Vertex::new([0.5, -0.5, 0.5], w, [1.0, 1.0]),
+            Vertex::new([0.5, 0.5, 0.5], w, [1.0, 0.0]),
+            Vertex::new([-0.5, 0.5, 0.5], w, [0.0, 0.0]),
+            // Back face (-Z)
+            Vertex::new([0.5, -0.5, -0.5], w, [0.0, 1.0]),
+            Vertex::new([-0.5, -0.5, -0.5], w, [1.0, 1.0]),
+            Vertex::new([-0.5, 0.5, -0.5], w, [1.0, 0.0]),
+            Vertex::new([0.5, 0.5, -0.5], w, [0.0, 0.0]),
+            // Right face (+X)
+            Vertex::new([0.5, -0.5, 0.5], w, [0.0, 1.0]),
+            Vertex::new([0.5, -0.5, -0.5], w, [1.0, 1.0]),
+            Vertex::new([0.5, 0.5, -0.5], w, [1.0, 0.0]),
+            Vertex::new([0.5, 0.5, 0.5], w, [0.0, 0.0]),
+            // Left face (-X)
+            Vertex::new([-0.5, -0.5, -0.5], w, [0.0, 1.0]),
+            Vertex::new([-0.5, -0.5, 0.5], w, [1.0, 1.0]),
+            Vertex::new([-0.5, 0.5, 0.5], w, [1.0, 0.0]),
+            Vertex::new([-0.5, 0.5, -0.5], w, [0.0, 0.0]),
+            // Top face (+Y)
+            Vertex::new([-0.5, 0.5, 0.5], w, [0.0, 1.0]),
+            Vertex::new([0.5, 0.5, 0.5], w, [1.0, 1.0]),
+            Vertex::new([0.5, 0.5, -0.5], w, [1.0, 0.0]),
+            Vertex::new([-0.5, 0.5, -0.5], w, [0.0, 0.0]),
+            // Bottom face (-Y)
+            Vertex::new([-0.5, -0.5, -0.5], w, [0.0, 1.0]),
+            Vertex::new([0.5, -0.5, -0.5], w, [1.0, 1.0]),
+            Vertex::new([0.5, -0.5, 0.5], w, [1.0, 0.0]),
+            Vertex::new([-0.5, -0.5, 0.5], w, [0.0, 0.0]),
         ];
         let indices: [u32; 36] = [
             0, 1, 2, 2, 3, 0, // Front
