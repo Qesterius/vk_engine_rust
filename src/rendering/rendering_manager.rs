@@ -9,7 +9,7 @@ use log::{info, warn};
 use std::sync::atomic::Ordering;
 
 use crate::assets::texture::TextureHandle;
-use crate::component_system::transform::Transform;
+use crate::component_system::transform::GlobalTransform;
 use crate::config::MAX_FRAMES_IN_FLIGHT;
 use crate::device::device::Device;
 use crate::rendering::components::mesh::Mesh;
@@ -255,10 +255,10 @@ impl RenderingManager {
                 &[],
             );
 
-            let mut query = world.query::<(&Mesh, &Transform, &TextureHandle)>();
+            let mut query = world.query::<(&Mesh, &GlobalTransform, &TextureHandle)>();
 
             for (mesh, transform, texture) in query.iter(world) {
-                let push = MeshPushConstants::new(transform.to_matrix());
+                let push = MeshPushConstants::new(transform.matrix());
                 device.cmd_push_constants(
                     cmd,
                     self.pipeline_layout,

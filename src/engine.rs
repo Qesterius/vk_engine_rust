@@ -6,7 +6,9 @@ use bevy_ecs::{schedule::Schedule, system::Query, world::Mut};
 use cgmath::{Quaternion, Rotation3};
 use winit::window::Window;
 
-use crate::component_system::transform::Transform;
+use crate::component_system::{
+    hierarchy::set_parent, propagate::propagate, transform::LocalTransform,
+};
 use crate::{
     assets::{self, texture::TextureHandle},
     device::device::Device,
@@ -84,7 +86,7 @@ impl Engine {
 
         for i in 0..10 {
             let cube = Mesh::new_cube(&device.memory_properties, Arc::clone(&device))?;
-            let mut transform = Transform::new([0.0, 0.0, 0.0]);
+            let mut transform = LocalTransform::new([0.0, 0.0, 0.0]);
             transform.translate(cgmath::Vector3 {
                 x: i as f32,
                 y: (i as f32) % 2.0,
@@ -97,6 +99,28 @@ impl Engine {
             ));
         }
 
+        // Hierarchy demo: a parent cube above the row with two smaller children 2 units to each side.
+        // `rotate_all` turns the parent around y, so the children should orbit it.
+        let parent = world
+            .spawn((
+                Mesh::new_cube(&device.memory_properties, Arc::clone(&device))?,
+                LocalTransform::new([4.5, 3.0, 6.0]),
+                TextureHandle(Arc::clone(&texture_wr)),
+            ))
+            .id();
+        for offset in [-2.0, 2.0] {
+            let mut local = LocalTransform::new([offset, 0.0, 0.0]);
+            local.set_scale(0.5);
+            let child = world
+                .spawn((
+                    Mesh::new_cube(&device.memory_properties, Arc::clone(&device))?,
+                    local,
+                    TextureHandle(Arc::clone(&texture_l)),
+                ))
+                .id();
+            set_parent(child, parent, &mut world);
+        }
+
         // --- Schedules ---
         let pre_update = Schedule::default();
 
@@ -106,7 +130,9 @@ impl Engine {
         let update = Schedule::default();
 
         let mut post_update = Schedule::default();
-        post_update.add_systems(clear_window_events);
+        // Propagation runs in post_update: gameplay writes LocalTransform in fixed_update/update,
+        // and the renderer reads GlobalTransform right after post_update.
+        post_update.add_systems((propagate, clear_window_events));
 
         Ok(Self {
             world,
@@ -181,7 +207,7 @@ impl Engine {
     }
 
     // simple system to validate rendering
-    fn rotate_all(mut query: Query<&mut Transform>) {
+    fn rotate_all(mut query: Query<&mut LocalTransform>) {
         let rotation_speed = cgmath::Deg(0.5);
         let step = Quaternion::from_angle_y(rotation_speed);
         for mut transform in &mut query {
