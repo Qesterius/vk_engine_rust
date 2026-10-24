@@ -1,12 +1,26 @@
 use bevy_ecs::{component::Component, entity::Entity, world::World};
 
 /// Immediate parent of this entity; absent on roots.
+/// The field is private so only `set_parent` / `remove_parent` can write it.
 #[derive(Component)]
-pub struct Parent(pub Entity);
+pub struct Parent(Entity);
+
+impl Parent {
+    pub fn get(&self) -> Entity {
+        self.0
+    }
+}
 
 /// Immediate children of this entity; kept in sync with `Parent` by `set_parent` / `remove_parent`.
-#[derive(Component, Default)]
-pub struct Children(pub Vec<Entity>);
+/// The field is private so only those two functions can write it.
+#[derive(Component)]
+pub struct Children(Vec<Entity>);
+
+impl Children {
+    pub fn iter(&self) -> impl Iterator<Item = Entity> + '_ {
+        self.0.iter().copied()
+    }
+}
 
 /// Returns the immediate parent, or `None` for a root.
 pub fn get_parent(child: Entity, world: &World) -> Option<Entity> {
