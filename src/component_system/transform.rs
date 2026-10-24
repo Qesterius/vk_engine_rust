@@ -1,14 +1,18 @@
-use bevy_ecs::component::Component;
-use cgmath::Rotation3;
+use std::ops::Mul;
 
+use bevy_ecs::component::Component;
+use cgmath::{Matrix4, Rotation3, SquareMatrix, Vector3};
+
+/// Position, rotation and scale relative to the parent (or the world for roots); written by gameplay.
 #[derive(Component)]
-pub struct Transform {
+#[require(GlobalTransform)]
+pub struct LocalTransform {
     pub position: cgmath::Vector3<f32>,
     pub rotation: cgmath::Quaternion<f32>,
     pub scale: cgmath::Vector3<f32>,
 }
 
-impl Transform {
+impl LocalTransform {
     pub fn new(position: [f32; 3]) -> Self {
         Self {
             position: position.into(),
@@ -50,5 +54,37 @@ impl Transform {
     pub fn set_scale(&mut self, s: f32) -> &mut Self {
         self.scale = cgmath::Vector3::new(s, s, s);
         self
+    }
+
+}
+
+/// World-space matrix computed from the hierarchy; read-only outside this module.
+#[derive(Component, Clone, Copy)]
+pub struct GlobalTransform(Matrix4<f32>);
+
+impl Default for GlobalTransform {
+    fn default() -> Self {
+        Self(Matrix4::identity())
+    }
+
+}
+
+impl GlobalTransform {
+    pub fn matrix(&self) -> Matrix4<f32> {
+        self.0
+    }
+
+    #[allow(dead_code)]
+    pub fn translation(&self) -> Vector3<f32> {
+        self.0.w.truncate()
+    }
+}
+
+impl Mul<&LocalTransform> for GlobalTransform {
+    type Output = GlobalTransform;
+
+    fn mul(self, rhs: &LocalTransform) -> Self::Output {
+        let local_matrix = rhs.to_matrix();
+        GlobalTransform(self.0 * local_matrix)
     }
 }
