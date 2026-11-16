@@ -180,6 +180,11 @@ impl Engine {
         // clear per-frame one of data like events
         self.post_update.run(&mut self.world);
 
+        // Ends the frame for the ECS's removal log, which `RemovedComponents` reads (`propagate` uses it
+        // for detached entities). Each removal stays readable for one more frame, then is dropped;
+        // without this call, every removal and despawn would stay in memory forever.
+        self.world.clear_trackers();
+
         Ok(())
     }
 

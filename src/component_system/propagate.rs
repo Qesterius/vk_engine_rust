@@ -319,4 +319,43 @@ mod tests {
 
         assert_near(world_position(&world, c), [1.0, 0.0, 0.0]);
     }
+
+    #[test]
+    fn removing_children_component_makes_children_roots() {
+        // before: a(10,0,0)
+        //         └── c(1,0,0)
+        // remove Children from a directly; its hook detaches c
+        // result: c = (1,0,0), its own local only
+        let (mut world, mut schedule) = setup();
+        let a = node(&mut world, [10.0, 0.0, 0.0]);
+        let c = node(&mut world, [1.0, 0.0, 0.0]);
+        set_parent(c, a, &mut world);
+        frame(&mut world, &mut schedule);
+
+        world.entity_mut(a).remove::<Children>();
+        frame(&mut world, &mut schedule);
+
+        assert_near(world_position(&world, c), [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn despawned_entities_are_skipped() {
+        // a(10,0,0)
+        // ├── b(1,0,0)   despawned
+        // └── x(5,0,0)
+        // b's removed Parent is still in the removal log; propagation must skip the dead entity
+        let (mut world, mut schedule) = setup();
+        let a = node(&mut world, [10.0, 0.0, 0.0]);
+        let b = node(&mut world, [1.0, 0.0, 0.0]);
+        let x = node(&mut world, [5.0, 0.0, 0.0]);
+        set_parent(b, a, &mut world);
+        set_parent(x, a, &mut world);
+        frame(&mut world, &mut schedule);
+
+        world.despawn(b);
+        world.get_mut::<LocalTransform>(a).unwrap().position.x = 20.0;
+        frame(&mut world, &mut schedule);
+
+        assert_near(world_position(&world, x), [25.0, 0.0, 0.0]);
+    }
 }

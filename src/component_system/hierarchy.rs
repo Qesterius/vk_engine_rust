@@ -1,8 +1,15 @@
-use bevy_ecs::{component::Component, entity::Entity, world::World};
+use bevy_ecs::{
+    component::Component,
+    entity::Entity,
+    lifecycle::HookContext,
+    world::{DeferredWorld, World},
+};
 
 /// Immediate parent of this entity; absent on roots.
 /// The field is private so only `set_parent` / `remove_parent` can write it.
+/// Removing the component any other way, despawn included, still unlinks the parent through `leave_parent`.
 #[derive(Component)]
+#[component(on_remove = leave_parent)]
 pub struct Parent(Entity);
 
 impl Parent {
@@ -11,10 +18,52 @@ impl Parent {
     }
 }
 
+/// Remove hook of `Parent`: runs whenever `Parent` leaves an entity (`remove_parent`, a direct
+/// `remove::<Parent>()`, or a despawn). The component is still readable here, so the hook knows
+/// which parent's `Children` to clean. Overwriting `Parent` in place, as `set_parent` does, doesn't run it.
+fn leave_parent(mut world: DeferredWorld, ctx: HookContext) {
+    let Some(parent) = world.get::<Parent>(ctx.entity).map(Parent::get) else {
+        return;
+    };
+    // `None` when the parent is already despawned; then there is no list to clean.
+    if let Some(mut children) = world.get_mut::<Children>(parent) {
+        children.0.retain(|&e| e != ctx.entity);
+    }
+}
+
 /// Immediate children of this entity; kept in sync with `Parent` by `set_parent` / `remove_parent`.
 /// The field is private so only those two functions can write it.
+/// Despawning the entity despawns its children (`despawn_children`); removing the component detaches them (`detach_children`).
 #[derive(Component)]
+#[component(on_despawn = despawn_children, on_remove = detach_children)]
 pub struct Children(Vec<Entity>);
+
+/// Despawn hook of `Children`: despawns every child, and through the same hook on them, the whole subtree.
+/// A hook can't add or remove entities, so the despawns are queued. The ECS applies them after this
+/// entity is gone, so the subtree goes top-down and each child's `leave_parent` finds no parent to clean.
+fn despawn_children(mut world: DeferredWorld, ctx: HookContext) {
+    let children = children_of(&world, ctx.entity);
+    let mut commands = world.commands();
+    for child in children {
+        commands.entity(child).try_despawn();
+    }
+}
+
+/// Remove hook of `Children`: detaches every child when `Children` is removed directly, so none is left
+/// pointing at a parent whose walk no longer reaches it. On despawn it runs after `despawn_children`,
+/// so its queued detaches find the children already gone and do nothing (`try_` skips missing entities).
+fn detach_children(mut world: DeferredWorld, ctx: HookContext) {
+    let children = children_of(&world, ctx.entity);
+    let mut commands = world.commands();
+    for child in children {
+        commands.entity(child).try_remove::<Parent>();
+    }
+}
+
+/// Copies the list out, so the hook can then borrow the world mutably for its commands.
+fn children_of(world: &DeferredWorld, entity: Entity) -> Vec<Entity> {
+    world.get::<Children>(entity).map(|c| c.0.clone()).unwrap_or_default()
+}
 
 impl Children {
     pub fn iter(&self) -> impl Iterator<Item = Entity> + '_ {
@@ -44,8 +93,13 @@ pub fn is_child_of(child: Entity, parent: Entity, world: &World) -> bool {
     false
 }
 
-/// Attaches `child` under `new_parent`; ignored if it would create a self-loop or cycle.
+/// Attaches `child` under `new_parent`; ignored if either entity doesn't exist, or if it would create a self-loop or cycle.
 pub fn set_parent(child: Entity, new_parent: Entity, world: &mut World) {
+    // Gameplay can hold ids of despawned entities. Checking up front keeps a dead id from
+    // failing halfway, after the child was already taken out of its old parent's `Children`.
+    if world.get_entity(child).is_err() || world.get_entity(new_parent).is_err() {
+        return;
+    }
     if child == new_parent || is_child_of(new_parent, child, world) {
         return;
     }
@@ -70,15 +124,11 @@ pub fn set_parent(child: Entity, new_parent: Entity, world: &mut World) {
     }
 }
 
-/// Detaches `child` from its parent, making it a root.
+/// Detaches `child` from its parent, making it a root. `leave_parent` updates the parent's `Children`.
 pub fn remove_parent(child: Entity, world: &mut World) {
-    let Some(parent) = get_parent(child, world) else {
-        return;
-    };
-    if let Some(mut children) = world.get_mut::<Children>(parent) {
-        children.0.retain(|&e| e != child);
+    if let Ok(mut child) = world.get_entity_mut(child) {
+        child.remove::<Parent>();
     }
-    world.entity_mut(child).remove::<Parent>();
 }
 
 #[cfg(test)]
@@ -211,5 +261,121 @@ mod tests {
         remove_parent(a, &mut world);
 
         assert_eq!(get_parent(a, &world), None);
+    }
+
+    #[test]
+    fn removing_parent_component_unlinks_both_sides() {
+        // before: a
+        //         └── b
+        // try:    remove Parent from b directly, bypassing remove_parent
+        // after:  a   b   (the remove hook still cleans a's Children)
+        let mut world = World::new();
+        let [a, b] = spawn(&mut world);
+        set_parent(b, a, &mut world);
+
+        world.entity_mut(b).remove::<Parent>();
+
+        assert_eq!(get_parent(b, &world), None);
+        assert_eq!(get_children(a, &world), Some(&[][..]));
+    }
+
+    #[test]
+    fn despawning_child_unlinks_parent() {
+        // before: a
+        //         └── b
+        // after:  a   (b despawned, no dead entry left in a's Children)
+        let mut world = World::new();
+        let [a, b] = spawn(&mut world);
+        set_parent(b, a, &mut world);
+
+        world.despawn(b);
+
+        assert_eq!(get_children(a, &world), Some(&[][..]));
+    }
+
+    #[test]
+    fn set_parent_with_despawned_entity_is_ignored() {
+        // before: a
+        //         └── b        x (despawned)
+        // try:    b under x, then x under a
+        // after:  unchanged, no panic
+        let mut world = World::new();
+        let [a, b, x] = spawn(&mut world);
+        set_parent(b, a, &mut world);
+        world.despawn(x);
+
+        set_parent(b, x, &mut world);
+        set_parent(x, a, &mut world);
+
+        assert_eq!(get_parent(b, &world), Some(a));
+        assert_eq!(get_children(a, &world), Some(&[b][..]));
+    }
+
+    #[test]
+    fn despawning_parent_despawns_subtree() {
+        // before: a
+        //         └── b
+        //             └── c
+        // after:  nothing left
+        let mut world = World::new();
+        let [a, b, c] = spawn(&mut world);
+        set_parent(b, a, &mut world);
+        set_parent(c, b, &mut world);
+
+        world.despawn(a);
+
+        assert!(world.get_entity(b).is_err());
+        assert!(world.get_entity(c).is_err());
+    }
+
+    #[test]
+    fn despawning_inner_entity_keeps_rest_of_tree_linked() {
+        // before: a
+        //         ├── b
+        //         │   └── c
+        //         └── d
+        // despawn b
+        // after:  a
+        //         └── d   (c went with b; a lists only d)
+        let mut world = World::new();
+        let [a, b, c, d] = spawn(&mut world);
+        set_parent(b, a, &mut world);
+        set_parent(c, b, &mut world);
+        set_parent(d, a, &mut world);
+
+        world.despawn(b);
+
+        assert!(world.get_entity(c).is_err());
+        assert_eq!(get_children(a, &world), Some(&[d][..]));
+        assert_eq!(get_parent(d, &world), Some(a));
+    }
+
+    #[test]
+    fn despawning_through_commands_despawns_subtree() {
+        // gameplay systems despawn through Commands; the hooks run when the command is applied
+        let mut world = World::new();
+        let [a, b] = spawn(&mut world);
+        set_parent(b, a, &mut world);
+
+        world.commands().entity(a).despawn();
+        world.flush();
+
+        assert!(world.get_entity(b).is_err());
+    }
+
+    #[test]
+    fn removing_children_component_detaches_children() {
+        // before: a
+        //         └── b
+        // try:    remove Children from a directly
+        // after:  a   b   (b is a root and still alive)
+        let mut world = World::new();
+        let [a, b] = spawn(&mut world);
+        set_parent(b, a, &mut world);
+
+        world.entity_mut(a).remove::<Children>();
+
+        assert!(world.get_entity(b).is_ok());
+        assert_eq!(get_parent(b, &world), None);
     }
 }

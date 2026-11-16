@@ -20,7 +20,7 @@ Entities form a tree through `Parent` and `Children`. Gameplay writes `LocalTran
 | Parent and child must point at each other | Both sides must agree, and a cycle would make propagation loop forever | **Parent / Children**, changed only through `set_parent` / `remove_parent` |
 | A world transform depends on every ancestor | A child computed before its parent uses last frame's parent value | **Propagation** walks parents before children |
 | Most of a scene is static each frame | Recomputing everything costs scene size, not what moved | **Propagation** starts only from seeds |
-| Despawning a parent | Its children keep pointing at a dead entity | **Despawn Flow** *(planned)* |
+| Despawning a parent | Its children keep pointing at a dead entity | **Despawn Flow** |
 
 Below only C's `LocalTransform` changed. Exact algorithm in Propagation section below
 Orange entities are recomputed and written, blue ones only read, grey ones never touched:
@@ -59,7 +59,7 @@ flowchart TB
   C --> E["E<br/>Parent: C"]
 ```
 
-All changes go through `set_parent` / `remove_parent`, which update both sides and reject self-parenting and cycles. Both components have private fields, so other code can only read them.
+All changes go through `set_parent` / `remove_parent`, which update both sides and reject self-parenting, cycles and despawned entities. Both components have private fields, so other code can only read them.
 
 ### Propagation
 
@@ -104,7 +104,13 @@ sequenceDiagram
   C->>C: same hooks, its own children are queued next
 ```
 
-`Parent`'s remove hook also covers `remove_parent`. The queued despawns run before the despawn call returns, so no system sees a dangling link. Without the hooks, the children of a despawned parent keep their last `GlobalTransform` until they next move, then jump to their `LocalTransform` as if they were roots.
+Three hooks in `hierarchy.rs`:
+
+- `despawn_children` (despawn hook of `Children`) queues a despawn of each child.
+- `leave_parent` (remove hook of `Parent`) drops the entity from its parent's `Children` on any removal of `Parent`: `remove_parent`, a direct `remove::<Parent>()`, or a despawn.
+- `detach_children` (remove hook of `Children`) detaches the children when `Children` is removed directly. On a despawn its detaches run after the despawns and find nothing.
+
+The subtree goes top-down, with no recursion of our own. By the time a child is despawned its parent is gone, so the child's `leave_parent` has no list to edit. The queued commands run before the despawn call returns, so no system sees a dangling link.
 
 | Approach | Pros | Cons |
 |---|---|---|
@@ -145,13 +151,12 @@ Only transforms propagate today. When a second inherited value arrives, such as 
 > `Changed<T>` also matches newly inserted components, so a first `set_parent` counts as a change. `RemovedComponents<Parent>` lists removals since the system last ran and can be read once per run.
 
 > [!NOTE] Implementation note — Despawn hooks
-> `#[component(on_despawn = ...)]` on `Children` and `#[component(on_remove = ...)]` on `Parent`; a hook is `fn(DeferredWorld, HookContext)`. A hook can't despawn directly, so it queues through `DeferredWorld::commands()`, and `World::despawn` flushes that queue before it returns. On despawn the ECS runs despawn hooks, then replace hooks, then remove hooks.
+> `#[component(on_despawn = ..., on_remove = ...)]` on `Children` and `#[component(on_remove = ...)]` on `Parent`; a hook is `fn(DeferredWorld, HookContext)`. A hook can't despawn or remove components directly, so it queues through `DeferredWorld::commands()`, and `World::despawn` applies that queue in order after the entity is gone. On despawn the ECS runs despawn hooks, then replace hooks, then remove hooks. `try_despawn` / `try_remove` skip entities that are already gone.
 
 > [!NOTE] Implementation note — Borrows and parallelism
 > Copying the parent's value out of a query before writing the child compiles; keeping the reference across `get_mut` fails with E0502. A parallel walk writes many entities through one query and needs `unsafe` (`get_unchecked`) or `par_iter_many_unique_mut`. `docs/tmp/propagate.rs` holds a parked version that marks dirty ancestors, walks marked trees level by level, and is generic over `Propagate`.
 
 ## TODO
 
-- [ ] **Despawn hooks.** The hooks from **Despawn Flow**, with tests for despawning a parent and a child.
 - [ ] **Generalization.** Make `propagate` generic over `Propagate` when the second inherited value (visibility) is added.
 - [ ] **Faster propagation.** Only if profiling shows it: the possible upgrade under **Propagation**.
